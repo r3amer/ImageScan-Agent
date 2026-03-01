@@ -236,6 +236,20 @@ def scan(
                         import json
                         from pathlib import Path
 
+                        # 收集 token 使用统计（从全局 llm_client 获取）
+                        token_usage = {
+                            "total_tokens": 0,
+                            "prompt_tokens": 0,
+                            "completion_tokens": 0,
+                            "call_count": 0
+                        }
+
+                        # 从任意一个 llm_client 获取统计（都是全局单例）
+                        if hasattr(executor, 'filename_analyzer') and hasattr(executor.filename_analyzer, 'llm_client'):
+                            token_usage = executor.filename_analyzer.llm_client.get_token_usage()
+                        elif hasattr(executor, 'content_scanner') and hasattr(executor.content_scanner, 'llm_client'):
+                            token_usage = executor.content_scanner.llm_client.get_token_usage()
+
                         result_data = {
                             "task_id": task_id,
                             "image": image,
@@ -243,6 +257,7 @@ def scan(
                             "status": db_task.get("status", ""),
                             "credentials_found": credentials_found,
                             "risk_level": "HIGH" if high_conf >= 10 else "MEDIUM" if high_conf >= 3 else "LOW",
+                            "token_usage": token_usage,
                             "statistics": {
                                 "total_layers": db_task.get("total_layers", 0),
                                 "processed_layers": db_task.get("processed_layers", 0),

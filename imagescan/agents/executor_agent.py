@@ -169,7 +169,23 @@ class ExecutorAgent(BaseAgent):
                     credentials_found=len(credentials)
                 )
 
-            # 8. 清理临时文件以节省磁盘空间
+            # 8. 更新任务统计信息到数据库
+            # 获取实际扫描的文件数（从层信息中统计）
+            layers = await self.database.get_layers_by_task(task_id)
+            total_files_scanned = sum(layer.get("file_count", 0) for layer in layers)
+
+            await self.database.update_task_status(
+                task_id,
+                status="completed",
+                total_layers=total_layers,
+                processed_layers=total_layers,
+                total_files=total_files_scanned,
+                processed_files=total_files_scanned,
+                credentials_found=total_credentials,
+                completed_at=datetime.utcnow().isoformat()
+            )
+
+            # 9. 清理临时文件以节省磁盘空间
             await self._cleanup_temp_files(tar_path, extract_path, task_id)
 
             logger.info(

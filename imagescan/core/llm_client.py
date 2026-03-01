@@ -52,6 +52,69 @@ class LLMClient:
 - 忽略明显的系统文件和配置模板
 - 对于脱敏内容（如 ***、******），判断为非凭证
 
+## 误报识别（非常重要，必须严格遵守）
+
+以下情况【不是】泄露的凭证，请忽略或设置极低置信度（< 0.2）：
+
+### 1. 环境变量引用（仅引用，无实际值）
+❌ 误报案例：
+- os.environ['PASSWORD']
+- os.getenv('API_KEY')
+- os.environ.get('SECRET_KEY')
+- environ['DATABASE_URL']
+- getenv('REDIS_PASSWORD')
+
+✅ 判断依据：这些只是从环境变量读取配置，密码值不在这行代码中
+
+### 2. 配置对象引用（仅引用，无实际值）
+❌ 误报案例：
+- config.DATABASE_URL
+- settings.API_KEY
+- app.config['SECRET_KEY']
+- Config.DB_PASSWORD
+- self.config.password
+
+✅ 判断依据：这些只是从配置对象读取，实际值在其他地方
+
+### 3. 模板/占位符（明显的占位符）
+❌ 误报案例：
+- "your_api_key_here"
+- "CHANGE_ME"
+- "TODO"
+- "xxx", "xxxx", "xxxxx"
+- "****", "******"
+- "example", "test", "demo"
+- "${PASSWORD}", "%API_KEY%", "$DB_URL"
+
+✅ 判断依据：这些是模板或占位符，不是真实的凭证
+
+### 4. 空值/默认值
+❌ 误报案例：
+- password = ""
+- api_key = None
+- secret = ""
+
+✅ 判断依据：空值不是有效的凭证
+
+### 5. 变量名/注释（仅提到关键词）
+❌ 误报案例：
+- # API_KEY=sk-1234
+- # password: abc123
+- TODO: set API_KEY here
+
+✅ 判断依据：注释或文档中的示例，不是实际使用
+
+## 真正的凭证泄露（应该报告）
+
+只有包含【实际敏感信息值】的才是真正的凭证泄露：
+
+✅ 真实凭证案例：
+- password = "abc123"                    # 硬编码密码
+- API_KEY = "sk-1234567890abcdef"        # 硬编码密钥
+- DB_URL = "postgres://user:pass@host/db" # 完整连接字符串
+- -----BEGIN PRIVATE KEY-----              # 实际私钥内容
+- AIzaSyDFI4KvZASwUXqzaqwL9F07rChEb4UUX2c  # 实际 API Key
+
 凭证类型分类：
 - API_KEY: API 密钥（sk-、xoxb-、AKIA... 等）
 - PASSWORD: 密码（password、passwd 等）
@@ -64,11 +127,13 @@ class LLMClient:
 - UNKNOWN: 其他未知类型
 
 置信度评分：
-- 0.9-1.0: 极高置信度（明确匹配敏感凭证格式）
-- 0.7-0.9: 高置信度（高度疑似）
+- 0.9-1.0: 极高置信度（明确包含敏感凭证的实际值）
+- 0.7-0.9: 高置信度（高度疑似包含实际值）
 - 0.5-0.7: 中等置信度（疑似，需人工确认）
-- 0.3-0.5: 低置信度（不确定）
-- 0.0-0.3: 极低置信度（不太可能）"""
+- 0.2-0.5: 低置信度（不确定，可能是引用）
+- 0.0-0.2: 极低置信度（基本确定是引用或占位符，仅在有明确值时才报告）
+
+记住：宁可漏报，不要误报。只报告你确定包含实际敏感信息的内容。"""
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         """
@@ -96,6 +161,12 @@ class LLMClient:
 
         # 模型配置（使用 Gemini 2.5 Flash）
         self.model = "gemini-2.5-flash"
+
+        # Token 统计
+        self.total_tokens_used = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.call_count = 0
 
         logger.info(
             "LLM 客户端初始化",
@@ -153,10 +224,26 @@ class LLMClient:
             # 解析 JSON
             result = json.loads(content)
 
-            logger.debug(
-                "LLM 响应成功",
-                tokens_used=response.usage.total_tokens if hasattr(response, 'usage') else None
-            )
+            # 统计 token 使用
+            if hasattr(response, 'usage') and response.usage:
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
+                total_tokens = response.usage.total_tokens
+
+                self.total_prompt_tokens += prompt_tokens
+                self.total_completion_tokens += completion_tokens
+                self.total_tokens_used += total_tokens
+                self.call_count += 1
+
+                logger.debug(
+                    "LLM 响应成功",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    call_count=self.call_count
+                )
+            else:
+                logger.debug("LLM 响应成功", tokens_used="N/A")
 
             return result
 
@@ -466,6 +553,25 @@ class LLMClient:
         )
 
         return result
+
+    def get_token_usage(self) -> Dict[str, int]:
+        """
+        获取 token 使用统计
+
+        Returns:
+            {
+                "total_tokens": int,
+                "prompt_tokens": int,
+                "completion_tokens": int,
+                "call_count": int
+            }
+        """
+        return {
+            "total_tokens": self.total_tokens_used,
+            "prompt_tokens": self.total_prompt_tokens,
+            "completion_tokens": self.total_completion_tokens,
+            "call_count": self.call_count
+        }
 
     async def close(self):
         """关闭客户端连接"""
