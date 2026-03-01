@@ -280,10 +280,16 @@ class ExecutorAgent(BaseAgent):
             layer_id=layer_id
         )
 
+        # 统计：扩展名过滤
+        extension_filtered = analysis_result.extension_filtered_out
+        path_filtered = analysis_result.filtered_out
+
         logger.debug(
             "文件名分析完成",
             layer_id=layer_id[:12],
-            candidates=analysis_result.total_candidates
+            candidates=analysis_result.total_candidates,
+            extension_filtered=extension_filtered,
+            path_filtered=path_filtered
         )
 
         # 3. 获取高优先级文件
@@ -338,6 +344,10 @@ class ExecutorAgent(BaseAgent):
             for ef in extracted_files
         ]
 
+        # 统计：三层筛选
+        structure_skipped = 0
+        summary_used_count = 0
+
         # 批量扫描
         if files_to_scan:
             scan_results = await self.content_scanner.scan_multiple_files(
@@ -345,6 +355,13 @@ class ExecutorAgent(BaseAgent):
                 max_concurrent=5,
                 progress_callback=progress_callback
             )
+
+            # 统计三层筛选效果
+            for scan_result in scan_results:
+                if hasattr(scan_result, 'was_skipped') and scan_result.was_skipped:
+                    structure_skipped += 1
+                if hasattr(scan_result, 'summary_used') and scan_result.summary_used:
+                    summary_used_count += 1
 
             # 5. 保存凭证到数据库
             for scan_result in scan_results:
@@ -388,10 +405,22 @@ class ExecutorAgent(BaseAgent):
 
                         credentials.append(cred_data)
 
+        # 统计信息
+        total_files = len(filenames)
+        files_scanned = len(scan_results) if files_to_scan else 0
+        total_filtered = extension_filtered + path_filtered + structure_skipped
+
         logger.info(
             "层扫描完成",
             layer_id=layer_id[:12],
-            credentials_found=len(credentials)
+            credentials_found=len(credentials),
+            total_files=total_files,
+            extension_filtered=extension_filtered,
+            path_filtered=path_filtered,
+            structure_skipped=structure_skipped,
+            files_scanned=files_scanned,
+            summary_used=summary_used_count,
+            filter_rate=f"{total_filtered / total_files:.2%}" if total_files > 0 else "0%"
         )
 
         return credentials

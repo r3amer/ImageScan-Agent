@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""
+ImageScan 扫描工具
+
+用法：
+    python3 scan <镜像名称> [选项]
+
+示例：
+    python3 scan nginx:latest
+    python3 scan 20.205.173.138:5000/myimage:tag1 --output results.json
+    python3 scan python:3.11 --verbose
+    python3 scan python:3.11 --debug
+"""
+
+import sys
+import asyncio
+
+# 添加项目根目录到 Python 路径
+from pathlib import Path
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+# 导入扫描模块
+from imagescan.scan import scan_image, show_history, print_header
+
+def main():
+    """主函数 - 入口点"""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="ImageScan Agent - Docker 镜像敏感凭证扫描工具",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  %(prog)s nginx:latest
+  %(prog)s 20.205.173.138:5000/myimage:tag1 --output results.json
+  %(prog)s python:3.11 --verbose
+  %(prog)s python:3.11 --debug
+  %(prog)s history
+  %(prog)s history --limit 20
+
+日志级别:
+  默认只显示 INFO 和 WARNING 级别日志
+  使用 --debug 参数查看详细的 DEBUG 日志
+        """
+    )
+
+    parser.add_argument(
+        "image",
+        nargs='?',  # 可选参数
+        help="Docker 镜像名称（如 nginx:latest），或使用 'history' 查看历史"
+    )
+
+    parser.add_argument(
+        "-o", "--output",
+        help="输出 JSON 文件路径",
+        default=None
+    )
+
+    parser.add_argument(
+        "-v", "--verbose",
+        help="详细输出（显示凭证详情）",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--debug",
+        help="启用调试模式（显示详细日志）",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="历史记录显示数量（默认：10）"
+    )
+
+    args = parser.parse_args()
+
+    # 判断是查看历史还是扫描镜像
+    if not args.image or args.image == 'history':
+        # 显示历史记录
+        show_history(limit=args.limit)
+        sys.exit(0)
+    else:
+        # 扫描镜像
+        result = asyncio.run(scan_image(
+            image_name=args.image,
+            output_file=args.output,
+            verbose=args.verbose,
+            debug=args.debug
+        ))
+        sys.exit(0 if result else 1)
+
+
+if __name__ == "__main__":
+    main()

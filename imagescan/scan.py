@@ -1,34 +1,22 @@
-#!/usr/bin/env python3
 """
-ImageScan 扫描工具
+ImageScan 扫描模块
 
-用法：
-    python3 imagescan_scan <镜像名称> [选项]
-
-示例：
-    python3 imagescan_scan nginx:latest
-    python3 imagescan_scan 20.205.173.138:5000/myimage:tag1 --output results.json
-    python3 imagescan_scan python:3.11 --verbose
-    python3 imagescan_scan python:3.11 --debug
+提供扫描功能的可导入接口
 """
 
 import sys
 import asyncio
-import argparse
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
-# 添加项目根目录到 Python 路径
-project_root = Path(__file__).parent
-sys.path.insert(0, str(project_root))
-
-from imagescan.agents.master_agent import MasterAgent
-from imagescan.agents.executor_agent import ExecutorAgent
-from imagescan.agents.validation_agent import ValidationAgent
-from imagescan.agents.knowledge_agent import KnowledgeAgent
-from imagescan.agents.reflection_agent import ReflectionAgent
-from imagescan.utils.database import get_database
-from imagescan.utils.logger import get_logger
+from .agents.master_agent import MasterAgent
+from .agents.executor_agent import ExecutorAgent
+from .agents.validation_agent import ValidationAgent
+from .agents.knowledge_agent import KnowledgeAgent
+from .agents.reflection_agent import ReflectionAgent
+from .utils.database import get_database
+from .utils.logger import get_logger, setup_logging, set_log_level
 from collections import Counter
 
 logger = get_logger(__name__)
@@ -72,7 +60,6 @@ async def scan_image(
     print_header("ImageScan Agent - Docker 镜像敏感凭证扫描")
 
     # 初始化日志系统（使用文本格式，便于用户查看）
-    from imagescan.utils.logger import setup_logging, set_log_level
     setup_logging(level="DEBUG", log_format="text")  # 文本格式更美观
 
     # 设置日志级别
@@ -200,28 +187,30 @@ async def scan_image(
 
                     # 置信度样式
                     if conf >= 0.8:
-                        conf_mark = "🔴"
+                        conf_style = f"🔴 {conf:.2f}"
                     elif conf >= 0.5:
-                        conf_mark = "🟡"
+                        conf_style = f"🟡 {conf:.2f}"
                     else:
-                        conf_mark = "🟢"
+                        conf_style = f"🟢 {conf:.2f}"
 
-                    print(f"{i}. {cred_type} {conf_mark}")
-                    print(f"   置信度: {conf:.2f}")
+                    print(f"{i}. [{cred_type}] {conf_style}")
                     print(f"   文件: {file_path}")
                     if line_number:
                         print(f"   行号: {line_number}")
-                    print(f"   状态: {validation_status}")
+                    if layer_id:
+                        print(f"   层: {layer_id[:12]}...")
+                    if validation_status != "PENDING":
+                        print(f"   验证: {validation_status}")
                     print()
 
                 if len(credentials) > 20:
-                    print(f"... 还有 {len(credentials) - 20} 个凭证\n")
+                    print(f"... 还有 {len(credentials) - 20} 个凭证未显示\n")
 
-            # 4. 保存结果到 JSON
+            # 保存结果到 JSON
             if output_file:
                 import json
 
-                # 收集 token 使用统计（从全局 llm_client 获取）
+                # 收集 token 使用统计
                 token_usage = {
                     "total_tokens": 0,
                     "prompt_tokens": 0,
@@ -241,8 +230,7 @@ async def scan_image(
                     "image_id": db_task.get("image_id", ""),
                     "status": db_task.get("status", ""),
                     "credentials_found": credentials_found,
-                    "risk_level": risk_level,
-                    "scan_duration_seconds": duration,
+                    "risk_level": "HIGH" if high_conf >= 10 else "MEDIUM" if high_conf >= 3 else "LOW",
                     "token_usage": token_usage,
                     "statistics": {
                         "total_layers": db_task.get("total_layers", 0),
@@ -250,9 +238,7 @@ async def scan_image(
                         "total_files": db_task.get("total_files", 0),
                         "high_confidence": high_conf,
                         "medium_confidence": medium_conf,
-                        "low_confidence": credentials_found - high_conf - medium_conf
                     },
-                    "credential_types": dict(cred_types),
                     "credentials": [
                         {
                             "type": cred.get("cred_type"),
@@ -260,8 +246,7 @@ async def scan_image(
                             "file_path": cred.get("file_path"),
                             "layer_id": cred.get("layer_id"),
                             "line_number": cred.get("line_number"),
-                            "validation_status": cred.get("validation_status"),
-                            "context": cred.get("context", "")
+                            "validation_status": cred.get("validation_status")
                         }
                         for cred in credentials
                     ],
@@ -278,10 +263,6 @@ async def scan_image(
 
                 print_success(f"结果已保存到: {output_path}")
 
-        else:
-            print("\n未发现凭证 ✨")
-            print(f"\n风险等级: 🟢 LOW")
-
         # 清理
         await master.stop()
         await executor.stop()
@@ -289,70 +270,74 @@ async def scan_image(
         await knowledge.stop()
         await reflection.stop()
 
-        print_header("扫描完成")
+        print_success("扫描完成！")
         return True
 
     except Exception as e:
         print_error(f"扫描失败: {e}")
-        if verbose:
+        if debug:
             import traceback
             traceback.print_exc()
         return False
 
 
-def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(
-        description="ImageScan Agent - Docker 镜像敏感凭证扫描工具",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例:
-  %(prog)s nginx:latest
-  %(prog)s 20.205.173.138:5000/myimage:tag1 --output results.json
-  %(prog)s python:3.11 --verbose
-  %(prog)s python:3.11 --debug
+async def show_history(limit: int = 10):
+    """显示历史扫描记录"""
 
-日志级别:
-  默认只显示 INFO 和 WARNING 级别日志
-  使用 --debug 参数查看详细的 DEBUG 日志
-        """
-    )
+    print_header("扫描历史记录")
 
-    parser.add_argument(
-        "image",
-        help="Docker 镜像名称（如 nginx:latest）"
-    )
+    try:
+        database = get_database()
+        await database.init()
 
-    parser.add_argument(
-        "-o", "--output",
-        help="输出 JSON 文件路径",
-        default=None
-    )
+        # 获取历史记录
+        tasks = await database.get_all_tasks(limit=limit)
 
-    parser.add_argument(
-        "-v", "--verbose",
-        help="详细输出（显示凭证详情）",
-        action="store_true"
-    )
+        if not tasks:
+            print_warning("暂无扫描记录")
+            return
 
-    parser.add_argument(
-        "--debug",
-        help="启用调试模式（显示详细日志）",
-        action="store_true"
-    )
+        # 显示记录
+        print(f"最近 {len(tasks)} 条扫描记录:\n")
 
-    args = parser.parse_args()
+        for i, task in enumerate(tasks, 1):
+            task_id = task.get("task_id", "")[:12]
+            image_name = task.get("image_name", "")
+            status = task.get("status", "UNKNOWN")
+            credentials_found = task.get("credentials_found", 0)
+            created_at = task.get("created_at", "")[:19] if len(task.get("created_at", "")) > 19 else task.get("created_at", "")
 
-    # 运行扫描
-    result = asyncio.run(scan_image(
-        image_name=args.image,
-        output_file=args.output,
-        verbose=args.verbose,
-        debug=args.debug
-    ))
+            # 计算耗时
+            duration = "N/A"
+            if task.get("started_at") and task.get("completed_at"):
+                start = task["started_at"]
+                end = task["completed_at"]
+                if isinstance(start, str) and isinstance(end, str):
+                    try:
+                        start_dt = datetime.fromisoformat(start)
+                        end_dt = datetime.fromisoformat(end)
+                        duration = f"{(end_dt - start_dt).total_seconds():.1f}s"
+                    except:
+                        pass
 
-    sys.exit(0 if result else 1)
+            # 状态样式
+            if status == "COMPLETED":
+                status_emoji = "✅"
+            elif status == "FAILED":
+                status_emoji = "❌"
+            elif status == "RUNNING":
+                status_emoji = "⏳"
+            else:
+                status_emoji = "❓"
 
+            print(f"{i}. {task_id} - {image_name}")
+            print(f"   状态: {status_emoji} {status}")
+            print(f"   凭证: {credentials_found} 个")
+            print(f"   时间: {created_at}")
+            print(f"   耗时: {duration}")
+            print()
 
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        print_error(f"查询失败: {e}")
+        if logger:
+            logger.error("显示历史失败", error=str(e))

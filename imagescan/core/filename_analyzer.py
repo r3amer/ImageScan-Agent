@@ -6,6 +6,7 @@
 2. 识别可能包含敏感凭证的文件
 3. 应用过滤规则（基于配置）
 4. 管理分析结果缓存
+5. 三层筛选优化：扩展名黑名单过滤
 
 参考：docs/APP_FLOW.md
 """
@@ -23,6 +24,133 @@ from ..tools.file_tools import file_filter_paths
 logger = get_logger(__name__)
 
 
+class FileExtensionFilter:
+    """
+    文件扩展名过滤器（三层筛选的第一层）
+
+    作用：
+    - 快速过滤明显的非文本文件
+    - 降低 LLM token 消耗
+    - 提高扫描效率
+    """
+
+    # 黑名单扩展名（这些文件类型几乎不可能包含凭证）
+    BLACKLIST_EXTENSIONS = {
+        # 媒体文件
+        '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.svg', '.webp',
+        '.mp4', '.mp3', '.avi', '.mov', '.wav', '.flac', '.ogg', '.wmv',
+        '.ttf', '.woff', '.woff2', '.otf', '.eot', '.woff1',
+        # 压缩文件
+        '.zip', '.tar', '.gz', '.rar', '.7z', '.bz2', '.xz', '.lzma', '.zst',
+        # 系统库和二进制
+        '.so', '.so.1', '.so.2', '.so.3', '.so.4', '.so.5', '.so.6', '.so.7',
+        '.a', '.lib', '.dll', '.exe', '.bin', '.dylib', '.o', '.obj',
+        # 编译后的代码
+        '.pyc', '.pyo', '.class', '.jar', '.war', '.ear', '.swf', '.dex',
+        # 其他非文本
+        '.pdf', '.ps', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+        '.db', '.sqlite', '.mdb',
+    }
+
+    # 白名单扩展名（这些文件类型很可能包含凭证）
+    WHITELIST_EXTENSIONS = {
+        # 环境和配置文件
+        '.env', '.pem', '.key', '.p12', '.jks', '.cer', '.crt', '.der',
+        '.config', '.conf', '.json', '.yaml', '.yml', '.xml', '.toml',
+        '.properties', '.ini', '.cfg', '.settings', '.params',
+        # 代码文件
+        '.txt', '.log', '.sql', '.sh', '.bash', '.zsh', '.fish',
+        '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.hpp',
+        '.php', '.rb', '.pl', '.lua', '.r', '.scala', '.kt', '.swift',
+        # 模板和构建文件
+        '.template', '.tpl', '.j2', '.jinja2', '.erb', '.mustache',
+        'Makefile', 'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
+        '.gradle', '.mvn', 'pom.xml', 'build.gradle', 'setup.py', 'requirements.txt',
+        # Web 相关
+        '.html', '.htm', '.css', '.scss', '.sass', '.less',
+        # 版本控制
+        '.gitignore', '.gitattributes', '.gitmodules',
+        # CI/CD
+        '.gitlab-ci.yml', '.travis.yml', 'jenkins.yml', 'circleci',
+        # 其他
+        '.md', '.rst', '.adoc',
+    }
+
+    @classmethod
+    def _get_extension(cls, filename: str) -> str:
+        """
+        获取文件扩展名
+
+        Args:
+            filename: 文件名
+
+        Returns:
+            扩展名（包含点号，如 ".txt"）
+        """
+        # 处理复合扩展名（如 .tar.gz）
+        if filename.endswith('.tar.gz') or filename.endswith('.tar.bz2') or filename.endswith('.tar.xz'):
+            return filename[filename.rfind('.tar.'):]
+        # 处理双重扩展名（如 .min.js）
+        parts = filename.rsplit('.', 2)
+        if len(parts) >= 3 and len(parts[-2]) <= 4:
+            return f'.{parts[-2]}.{parts[-1]}'
+        # 普通扩展名
+        return Path(filename).suffix.lower()
+
+    def filter_by_extension(
+        self,
+        filenames: List[str]
+    ) -> Dict[str, List[str]]:
+        """
+        根据扩展名过滤文件
+
+        Args:
+            filenames: 文件名列表
+
+        Returns:
+            {
+                'high_priority': 白名单文件（高优先级）,
+                'medium_priority': 未在黑名单也未在白名单（中等优先级）,
+                'low_priority': 其他文件（低优先级）,
+                'filtered_out': 黑名单文件（已过滤）,
+                'stats': 统计信息
+            }
+        """
+        high_priority = []
+        medium_priority = []
+        low_priority = []
+        blacklisted = []
+
+        for filename in filenames:
+            ext = self._get_extension(filename)
+
+            if ext in self.BLACKLIST_EXTENSIONS:
+                blacklisted.append(filename)
+            elif ext in self.WHITELIST_EXTENSIONS:
+                high_priority.append(filename)
+            elif ext:  # 有扩展名但不在白名单
+                medium_priority.append(filename)
+            else:  # 无扩展名
+                low_priority.append(filename)
+
+        stats = {
+            'total': len(filenames),
+            'high_priority': len(high_priority),
+            'medium_priority': len(medium_priority),
+            'low_priority': len(low_priority),
+            'filtered_out': len(blacklisted),
+            'filter_rate': len(blacklisted) / len(filenames) if filenames else 0
+        }
+
+        return {
+            'high_priority': high_priority,
+            'medium_priority': medium_priority,
+            'low_priority': low_priority,
+            'filtered_out': blacklisted,
+            'stats': stats
+        }
+
+
 class FilenameAnalysisResult:
     """文件名分析结果"""
 
@@ -32,13 +160,17 @@ class FilenameAnalysisResult:
         high_confidence: List[str],
         medium_confidence: List[str],
         low_confidence: List[str],
-        filtered_out: int = 0
+        filtered_out: int = 0,
+        extension_filtered_out: int = 0,
+        filter_stats: Optional[Dict] = None
     ):
         self.layer_id = layer_id
         self.high_confidence = high_confidence
         self.medium_confidence = medium_confidence
         self.low_confidence = low_confidence
         self.filtered_out = filtered_out
+        self.extension_filtered_out = extension_filtered_out
+        self.filter_stats = filter_stats or {}
         self.analyzed_at = datetime.utcnow()
 
     @property
@@ -63,7 +195,10 @@ class FilenameAnalysisResult:
             "medium_confidence": self.medium_confidence,
             "low_confidence": self.low_confidence,
             "filtered_out": self.filtered_out,
+            "extension_filtered_out": self.extension_filtered_out,
+            "total_filtered_out": self.filtered_out + self.extension_filtered_out,
             "total_candidates": self.total_candidates,
+            "filter_stats": self.filter_stats,
             "analyzed_at": self.analyzed_at.isoformat()
         }
 
@@ -76,6 +211,7 @@ class FilenameAnalyzer:
     1. 过滤系统目录和低风险文件
     2. 批量分析文件名
     3. 缓存分析结果
+    4. 三层筛选：扩展名过滤
     """
 
     def __init__(self):
@@ -87,6 +223,15 @@ class FilenameAnalyzer:
         # 获取过滤配置
         self.prefixes = self.config.filter_rules.prefix_exclude if hasattr(self.config, 'filter_rules') else []
         self.keywords = self.config.filter_rules.low_probability_keywords if hasattr(self.config, 'filter_rules') else []
+
+        # 初始化扩展名过滤器（三层筛选第一层）
+        self.extension_filter = FileExtensionFilter()
+
+        # 检查是否启用三层筛选
+        self.three_layer_enabled = (
+            hasattr(self.config, 'three_layer_filtering') and
+            getattr(self.config.three_layer_filtering, 'enabled', False)
+        )
 
     def _should_skip_path(self, path: str) -> bool:
         """
@@ -114,25 +259,54 @@ class FilenameAnalyzer:
         self,
         filenames: List[str],
         layer_id: Optional[str] = None
-    ) -> List[str]:
+    ) -> tuple[List[str], Dict]:
         """
         预处理文件名列表
 
         - 移除明显的系统目录
         - 应用配置的过滤规则
         - 标准化路径
+        - 三层筛选第一层：扩展名过滤
 
         Args:
             filenames: 文件名列表
             layer_id: 层 ID
 
         Returns:
-            过滤后的文件名列表
+            (过滤后的文件名列表, 过滤统计信息)
         """
+        # 第一层：扩展名过滤（如果启用）
+        extension_stats = {}
+        if self.three_layer_enabled:
+            filter_result = self.extension_filter.filter_by_extension(filenames)
+
+            # 只保留未在黑名单中的文件
+            # 将高、中、低优先级合并
+            candidates = (
+                filter_result['high_priority'] +
+                filter_result['medium_priority'] +
+                filter_result['low_priority']
+            )
+            extension_stats = filter_result['stats']
+
+            logger.info(
+                "扩展名过滤完成",
+                layer_id=layer_id,
+                total=extension_stats['total'],
+                high_priority=extension_stats['high_priority'],
+                medium_priority=extension_stats['medium_priority'],
+                low_priority=extension_stats['low_priority'],
+                filtered_out=extension_stats['filtered_out'],
+                filter_rate=f"{extension_stats['filter_rate']:.2%}"
+            )
+        else:
+            candidates = filenames
+
+        # 第二步：路径前缀和关键词过滤
         filtered: List[str] = []
         skipped = 0
 
-        for filename in filenames:
+        for filename in candidates:
             # 标准化路径
             normalized = filename.lstrip("/")
 
@@ -147,11 +321,12 @@ class FilenameAnalyzer:
             "文件名预处理完成",
             layer_id=layer_id,
             original_count=len(filenames),
-            filtered_count=len(filtered),
-            skipped_count=skipped
+            extension_filtered_out=extension_stats.get('filtered_out', 0),
+            path_filtered_out=skipped,
+            final_count=len(filtered)
         )
 
-        return filtered
+        return filtered, extension_stats
 
     async def analyze_layer(
         self,
@@ -181,8 +356,8 @@ class FilenameAnalyzer:
             filename_count=len(filenames)
         )
 
-        # 预处理
-        filtered_filenames = self._preprocess_filenames(filenames, layer_id)
+        # 预处理（包含扩展名过滤）
+        filtered_filenames, extension_stats = self._preprocess_filenames(filenames, layer_id)
 
         if not filtered_filenames:
             logger.info("过滤后无文件需要分析", layer_id=layer_id)
@@ -191,7 +366,9 @@ class FilenameAnalyzer:
                 high_confidence=[],
                 medium_confidence=[],
                 low_confidence=[],
-                filtered_out=len(filenames)
+                filtered_out=len(filenames),
+                extension_filtered_out=extension_stats.get('filtered_out', 0),
+                filter_stats=extension_stats
             )
             self._cache[layer_id] = result
             return result
@@ -209,7 +386,9 @@ class FilenameAnalyzer:
                 high_confidence=llm_result.get("high_confidence", []),
                 medium_confidence=llm_result.get("medium_confidence", []),
                 low_confidence=llm_result.get("low_confidence", []),
-                filtered_out=len(filenames) - len(filtered_filenames)
+                filtered_out=len(filenames) - len(filtered_filenames),
+                extension_filtered_out=extension_stats.get('filtered_out', 0),
+                filter_stats=extension_stats
             )
 
             # 缓存结果
@@ -238,7 +417,9 @@ class FilenameAnalyzer:
                 high_confidence=[],
                 medium_confidence=[],
                 low_confidence=[],
-                filtered_out=len(filenames)
+                filtered_out=len(filenames),
+                extension_filtered_out=extension_stats.get('filtered_out', 0),
+                filter_stats=extension_stats
             )
 
     async def analyze_multiple_layers(
