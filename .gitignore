@@ -4,3 +4,10 @@ tmp/
 __pycache__
 test*
 config*
+.claude
+archive
+scripts
+output
+data
+logs
+progress*

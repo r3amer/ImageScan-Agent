@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""
+ImageScan 临时文件清理工具
+
+用法：
+    python3 imagescan_cleanup
+    python3 imagescan_cleanup --dry-run
+    python3 imagescan_cleanup --all
+
+选项：
+    --dry-run: 只显示将要删除的文件，不实际删除
+    --all: 清理所有临时文件（包括正在运行的扫描任务）
+    --older-than-days: 只清理指定天数前的文件（默认7天）
+"""
+
+import sys
+import argparse
+import shutil
+from pathlib import Path
+from datetime import datetime, timedelta
+
+# 添加项目根目录到 Python 路径
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+
+def print_header(text):
+    """打印标题"""
+    print(f"\n{'='*70}")
+    print(f"  {text}")
+    print(f"{'='*70}\n")
+
+
+def print_success(text):
+    """打印成功消息"""
+    print(f"✅ {text}")
+
+
+def print_info(text):
+    """打印信息"""
+    print(f"ℹ️  {text}")
+
+
+def print_warning(text):
+    """打印警告"""
+    print(f"⚠️  {text}")
+
+
+def get_dir_size(directory: Path) -> int:
+    """获取目录大小（字节）"""
+    try:
+        return sum(f.stat().st_size for f in directory.rglob('*') if f.is_file())
+    except:
+        return 0
+
+
+def cleanup_temp_files(
+    dry_run: bool = False,
+    clean_all: bool = False,
+    older_than_days: int = 7
+):
+    """清理临时文件"""
+
+    print_header("ImageScan 临时文件清理工具")
+
+    # 输出目录
+    output_dir = Path("output")
+    if not output_dir.exists():
+        print_warning("output 目录不存在，无需清理")
+        return True
+
+    image_tar_dir = output_dir / "image_tar"
+    extracted_dir = output_dir / "extracted"
+
+    # 统计信息
+    total_dirs = 0
+    total_size = 0
+    files_to_delete = []
+    kept_extracted = []  # 记录保留的extracted目录
+
+    cutoff_time = datetime.now() - timedelta(days=older_than_days)
+
+    # 1. 检查 image_tar 目录（清理）
+    if image_tar_dir.exists():
+        for task_dir in image_tar_dir.iterdir():
+            if task_dir.is_dir():
+                # 检查目录修改时间
+                dir_mtime = datetime.fromtimestamp(task_dir.stat().st_mtime)
+
+                if clean_all or dir_mtime < cutoff_time:
+                    dir_size = get_dir_size(task_dir)
+                    files_to_delete.append({
+                        "path": task_dir,
+                        "size": dir_size,
+                        "type": "tar"
+                    })
+                    total_dirs += 1
+                    total_size += dir_size
+
+    # 2. 检查 extracted 目录（保留，仅统计）
+    if extracted_dir.exists():
+        for task_dir in extracted_dir.iterdir():
+            if task_dir.is_dir():
+                dir_size = get_dir_size(task_dir)
+                kept_extracted.append({
+                    "path": task_dir,
+                    "size": dir_size
+                })
+
+    # 3. 检查 layer 提取目录（清理）
+    for extracted_dir in output_dir.glob("*_extracted"):
+        if extracted_dir.is_dir():
+            dir_mtime = datetime.fromtimestamp(extracted_dir.stat().st_mtime)
+
+            if clean_all or dir_mtime < cutoff_time:
+                dir_size = get_dir_size(extracted_dir)
+                files_to_delete.append({
+                    "path": extracted_dir,
+                    "size": dir_size,
+                    "type": "layer"
+                })
+                total_dirs += 1
+                total_size += dir_size
+
+    if not files_to_delete and not kept_extracted:
+        print_info("没有找到临时文件")
+        return True
+
+    # 显示保留的extracted目录
+    if kept_extracted:
+        kept_size = sum(item["size"] for item in kept_extracted)
+        print(f"保留 {len(kept_extracted)} 个解压目录（供查看凭证位置）: {kept_size / 1024 / 1024:.2f} MB\n")
+
+        if len(kept_extracted) <= 5:
+            for item in kept_extracted:
+                size_mb = item["size"] / 1024 / 1024
+                print(f"  ✓ {item['path'].relative_to(output_dir)} ({size_mb:.2f} MB)")
+        else:
+            for item in kept_extracted[:3]:
+                size_mb = item["size"] / 1024 / 1024
+                print(f"  ✓ {item['path'].relative_to(output_dir)} ({size_mb:.2f} MB)")
+            print(f"  ... 还有 {len(kept_extracted) - 3} 个目录\n")
+
+    if not files_to_delete:
+        print_info("没有需要清理的tar文件")
+        return True
+
+    # 显示将要删除的文件
+    print(f"找到 {len(files_to_delete)} 个临时目录需要清理：\n")
+
+    for item in files_to_delete[:20]:  # 最多显示20个
+        size_mb = item["size"] / 1024 / 1024
+        print(f"  • {item['path'].relative_to(output_dir)}")
+        print(f"    类型: {item['type']}, 大小: {size_mb:.2f} MB")
+
+    if len(files_to_delete) > 20:
+        print(f"\n  ... 还有 {len(files_to_delete) - 20} 个目录")
+
+    print(f"\n总计将删除: {total_dirs} 个目录, {total_size / 1024 / 1024:.2f} MB")
+
+    if dry_run:
+        print("\n[DRY RUN] 未实际删除文件（使用 --all 参数来执行实际清理）")
+        return True
+
+    # 确认删除
+    print("\n⚠️  警告：此操作将永久删除上述临时文件！")
+    confirm = input("\n确认删除？(输入 'yes' 继续): ")
+
+    if confirm.lower() != 'yes':
+        print_info("已取消清理操作")
+        return True
+
+    # 执行删除
+    print("\n开始清理...")
+
+    deleted_count = 0
+    freed_space = 0
+
+    for item in files_to_delete:
+        try:
+            if item["path"].exists():
+                shutil.rmtree(item["path"])
+                deleted_count += 1
+                freed_space += item["size"]
+                print(f"  ✓ 已删除: {item['path'].relative_to(output_dir)}")
+        except Exception as e:
+            print(f"  ✗ 删除失败: {item['path']} - {e}")
+
+    print(f"\n✅ 清理完成！")
+    print(f"   删除目录: {deleted_count} 个")
+    print(f"   释放空间: {freed_space / 1024 / 1024:.2f} MB")
+
+    return True
+
+
+def main():
+    """主函数"""
+    parser = argparse.ArgumentParser(
+        description="ImageScan 临时文件清理工具",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  %(prog)s                    # 清理7天前的临时文件
+  %(prog)s --dry-run          # 只显示将要删除的文件
+  %(prog)s --all              # 清理所有临时文件
+  %(prog)s --older-than-days 30  # 清理30天前的临时文件
+        """
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        help="只显示将要删除的文件，不实际删除",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--all",
+        help="清理所有临时文件（包括最近的）",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--older-than-days",
+        help="只清理指定天数前的文件（默认7天）",
+        type=int,
+        default=7
+    )
+
+    args = parser.parse_args()
+
+    # 运行清理
+    try:
+        result = cleanup_temp_files(
+            dry_run=args.dry_run,
+            clean_all=args.all,
+            older_than_days=args.older_than_days
+        )
+        sys.exit(0 if result else 1)
+    except KeyboardInterrupt:
+        print("\n\n⚠️  用户中断")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ 清理失败: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

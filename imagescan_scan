@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""
+ImageScan 扫描工具
+
+用法：
+    python3 imagescan_scan <镜像名称> [选项]
+
+示例：
+    python3 imagescan_scan nginx:latest
+    python3 imagescan_scan 20.205.173.138:5000/myimage:tag1 --output results.json
+    python3 imagescan_scan python:3.11 --verbose
+    python3 imagescan_scan python:3.11 --debug
+"""
+
+import sys
+import asyncio
+import argparse
+from pathlib import Path
+from datetime import datetime
+
+# 添加项目根目录到 Python 路径
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
+from imagescan.agents.master_agent import MasterAgent
+from imagescan.agents.executor_agent import ExecutorAgent
+from imagescan.agents.validation_agent import ValidationAgent
+from imagescan.agents.knowledge_agent import KnowledgeAgent
+from imagescan.agents.reflection_agent import ReflectionAgent
+from imagescan.utils.database import get_database
+from imagescan.utils.logger import get_logger
+from collections import Counter
+
+logger = get_logger(__name__)
+
+
+def print_header(text):
+    """打印标题"""
+    print(f"\n{'='*70}")
+    print(f"  {text}")
+    print(f"{'='*70}\n")
+
+
+def print_success(text):
+    """打印成功消息"""
+    print(f"✅ {text}")
+
+
+def print_info(text):
+    """打印信息"""
+    print(f"ℹ️  {text}")
+
+
+def print_warning(text):
+    """打印警告"""
+    print(f"⚠️  {text}")
+
+
+def print_error(text):
+    """打印错误"""
+    print(f"❌ {text}")
+
+
+async def scan_image(
+    image_name: str,
+    output_file: str = None,
+    verbose: bool = False,
+    debug: bool = False
+):
+    """扫描 Docker 镜像"""
+
+    print_header("ImageScan Agent - Docker 镜像敏感凭证扫描")
+
+    # 初始化日志系统（使用文本格式，便于用户查看）
+    from imagescan.utils.logger import setup_logging, set_log_level
+    setup_logging(level="DEBUG", log_format="text")  # 文本格式更美观
+
+    # 设置日志级别
+    if debug:
+        set_log_level("DEBUG")
+        print_info("已启用调试模式")
+    else:
+        set_log_level("INFO")
+
+    try:
+        # 1. 初始化 Agent
+        print_info("初始化 Agent...")
+
+        database = get_database()
+        await database.init()
+
+        event_bus = None  # 使用全局实例
+
+        master = MasterAgent(event_bus=event_bus, database=database)
+        executor = ExecutorAgent(event_bus=event_bus, database=database)
+        validator = ValidationAgent(event_bus=event_bus, database=database)
+        knowledge = KnowledgeAgent(event_bus=event_bus)
+        reflection = ReflectionAgent(event_bus=event_bus, database=database)
+
+        # 设置从 Agent
+        master.set_agents(executor, validator, knowledge, reflection)
+
+        # 初始化所有 Agent
+        await master.initialize()
+        await executor.initialize()
+        await validator.initialize()
+        await knowledge.initialize()
+        await reflection.initialize()
+
+        print_success("Agent 初始化完成")
+
+        # 2. 执行扫描
+        print_info(f"开始扫描镜像: {image_name}")
+        print()
+
+        start_time = datetime.utcnow()
+
+        result = await master.process(
+            image_name=image_name,
+            image_id=image_name
+        )
+
+        end_time = datetime.utcnow()
+        duration = (end_time - start_time).total_seconds()
+
+        # 3. 显示结果
+        print_header("扫描结果")
+
+        task_id = result.get("task_id")
+        extract_path = Path("output/extracted") / task_id
+
+        if not task_id:
+            print_error("未获取到任务 ID")
+            return False
+
+        # 获取任务信息
+        db_task = await database.get_task(task_id)
+        if not db_task:
+            print_error("未获取到任务信息")
+            return False
+
+        # 基本信息
+        print(f"镜像: {image_name}")
+        print(f"任务 ID: {task_id}")
+        print(f"状态: {db_task.get('status', 'UNKNOWN')}")
+        print(f"扫描耗时: {duration:.2f} 秒")
+
+        # 获取凭证列表
+        credentials = await database.get_credentials_by_task(task_id)
+        credentials_found = len(credentials)
+
+        print(f"\n发现凭证: {credentials_found} 个")
+
+        if credentials:
+            # 统计信息
+            cred_types = Counter(cred.get("cred_type", "UNKNOWN") for cred in credentials)
+            high_conf = sum(1 for cred in credentials if cred.get("confidence", 0) >= 0.8)
+            medium_conf = sum(1 for cred in credentials if 0.5 <= cred.get("confidence", 0) < 0.8)
+
+            print(f"  - 高置信度 (≥0.8): {high_conf} 个")
+            print(f"  - 中置信度 (0.5-0.8): {medium_conf} 个")
+            print(f"  - 低置信度 (<0.5): {credentials_found - high_conf - medium_conf} 个")
+
+            # 凭证类型分布
+            if cred_types:
+                print(f"\n凭证类型分布:")
+                for cred_type, count in cred_types.most_common():
+                    print(f"  - {cred_type}: {count} 个")
+
+            # 风险等级
+            if high_conf >= 10:
+                risk_level = "HIGH"
+                risk_emoji = "🔴"
+            elif high_conf >= 3:
+                risk_level = "MEDIUM"
+                risk_emoji = "🟡"
+            else:
+                risk_level = "LOW"
+                risk_emoji = "🟢"
+
+            print(f"\n风险等级: {risk_emoji} {risk_level}")
+
+            # 显示解压目录路径（便于用户查看文件）
+            print(f"\n📂 解压文件位置: {extract_path}/")
+            print(f"   (可以查看凭证在镜像中的具体位置)")
+
+            # 详细凭证列表
+            if verbose:
+                print(f"\n{'='*70}")
+                print("详细凭证列表")
+                print(f"{'='*70}\n")
+
+                for i, cred in enumerate(credentials[:20], 1):  # 最多显示20个
+                    cred_type = cred.get("cred_type", "UNKNOWN")
+                    conf = cred.get("confidence", 0.0)
+                    file_path = cred.get("file_path", "")
+                    layer_id = cred.get("layer_id", "")
+                    line_number = cred.get("line_number")
+                    validation_status = cred.get("validation_status", "PENDING")
+
+                    # 置信度样式
+                    if conf >= 0.8:
+                        conf_mark = "🔴"
+                    elif conf >= 0.5:
+                        conf_mark = "🟡"
+                    else:
+                        conf_mark = "🟢"
+
+                    print(f"{i}. {cred_type} {conf_mark}")
+                    print(f"   置信度: {conf:.2f}")
+                    print(f"   文件: {file_path}")
+                    if line_number:
+                        print(f"   行号: {line_number}")
+                    print(f"   状态: {validation_status}")
+                    print()
+
+                if len(credentials) > 20:
+                    print(f"... 还有 {len(credentials) - 20} 个凭证\n")
+
+            # 4. 保存结果到 JSON
+            if output_file:
+                import json
+
+                result_data = {
+                    "task_id": task_id,
+                    "image": image_name,
+                    "image_id": db_task.get("image_id", ""),
+                    "status": db_task.get("status", ""),
+                    "credentials_found": credentials_found,
+                    "risk_level": risk_level,
+                    "scan_duration_seconds": duration,
+                    "statistics": {
+                        "total_layers": db_task.get("total_layers", 0),
+                        "processed_layers": db_task.get("processed_layers", 0),
+                        "total_files": db_task.get("total_files", 0),
+                        "high_confidence": high_conf,
+                        "medium_confidence": medium_conf,
+                        "low_confidence": credentials_found - high_conf - medium_conf
+                    },
+                    "credential_types": dict(cred_types),
+                    "credentials": [
+                        {
+                            "type": cred.get("cred_type"),
+                            "confidence": cred.get("confidence"),
+                            "file_path": cred.get("file_path"),
+                            "layer_id": cred.get("layer_id"),
+                            "line_number": cred.get("line_number"),
+                            "validation_status": cred.get("validation_status"),
+                            "context": cred.get("context", "")
+                        }
+                        for cred in credentials
+                    ],
+                    "created_at": db_task.get("created_at", ""),
+                    "started_at": db_task.get("started_at", ""),
+                    "completed_at": db_task.get("completed_at", "")
+                }
+
+                output_path = Path(output_file)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(result_data, f, indent=2, ensure_ascii=False)
+
+                print_success(f"结果已保存到: {output_path}")
+
+        else:
+            print("\n未发现凭证 ✨")
+            print(f"\n风险等级: 🟢 LOW")
+
+        # 清理
+        await master.stop()
+        await executor.stop()
+        await validator.stop()
+        await knowledge.stop()
+        await reflection.stop()
+
+        print_header("扫描完成")
+        return True
+
+    except Exception as e:
+        print_error(f"扫描失败: {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        return False
+
+
+def main():
+    """主函数"""
+    parser = argparse.ArgumentParser(
+        description="ImageScan Agent - Docker 镜像敏感凭证扫描工具",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  %(prog)s nginx:latest
+  %(prog)s 20.205.173.138:5000/myimage:tag1 --output results.json
+  %(prog)s python:3.11 --verbose
+  %(prog)s python:3.11 --debug
+
+日志级别:
+  默认只显示 INFO 和 WARNING 级别日志
+  使用 --debug 参数查看详细的 DEBUG 日志
+        """
+    )
+
+    parser.add_argument(
+        "image",
+        help="Docker 镜像名称（如 nginx:latest）"
+    )
+
+    parser.add_argument(
+        "-o", "--output",
+        help="输出 JSON 文件路径",
+        default=None
+    )
+
+    parser.add_argument(
+        "-v", "--verbose",
+        help="详细输出（显示凭证详情）",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--debug",
+        help="启用调试模式（显示详细日志）",
+        action="store_true"
+    )
+
+    args = parser.parse_args()
+
+    # 运行扫描
+    result = asyncio.run(scan_image(
+        image_name=args.image,
+        output_file=args.output,
+        verbose=args.verbose,
+        debug=args.debug
+    ))
+
+    sys.exit(0 if result else 1)
+
+
+if __name__ == "__main__":
+    main()
