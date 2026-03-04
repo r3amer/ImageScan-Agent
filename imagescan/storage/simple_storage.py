@@ -12,7 +12,7 @@
 
 import json
 from typing import Dict, List, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 
 
@@ -38,7 +38,7 @@ class CredentialRecord:
     line_number: Optional[int] = None
     context: Optional[str] = None
     validation_status: str = "PENDING"
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 @dataclass
@@ -152,7 +152,7 @@ class SimpleStorageManager:
             line_number=cred_data.get("line_number"),
             context=cred_data.get("context"),
             validation_status=cred_data.get("validation_status", "PENDING"),
-            created_at=cred_data.get("created_at", datetime.utcnow().isoformat())
+            created_at=cred_data.get("created_at", datetime.now(timezone.utc).isoformat())
         )
         self.add_credential(credential)
 

@@ -11,7 +11,7 @@
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 from .event_bus import get_event_bus, EventBus
@@ -82,7 +82,7 @@ class ScanOrchestrator:
         # 设置元数据
         self.storage.set_metadata("task_id", task_id)
         self.storage.set_metadata("image_name", image_name)
-        self.storage.set_metadata("started_at", datetime.utcnow().isoformat())
+        self.storage.set_metadata("started_at", datetime.now(timezone.utc).isoformat())
 
         try:
             # 1. 初始化依赖
@@ -112,7 +112,7 @@ class ScanOrchestrator:
                 logger.info("结果已保存", path=output_file)
 
             # 更新完成时间
-            self.storage.set_metadata("completed_at", datetime.utcnow().isoformat())
+            self.storage.set_metadata("completed_at", datetime.now(timezone.utc).isoformat())
 
             logger.info("扫描完成", task_id=task_id, credentials=result["credential_count"])
             return result

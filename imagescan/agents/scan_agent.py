@@ -13,7 +13,7 @@
 import json
 import asyncio
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..core.agent import Agent
 from ..core.events import EventType, Event
@@ -74,7 +74,7 @@ class ScanAgent(Agent):
         """
         logger.info("ScanAgent 启动", task_id=self.task_id, image=self.image_name)
 
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
 
         try:
             # 初始化上下文
@@ -123,7 +123,7 @@ class ScanAgent(Agent):
                 )
 
             # 完成扫描
-            duration = (datetime.utcnow() - start_time).total_seconds()
+            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
             return self._build_result(duration)
 
         except Exception as e:
@@ -471,7 +471,7 @@ class ScanAgent(Agent):
                 "parameters": decision.get("parameters", {}),
                 "result": history_result,
                 "status": "success",
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
             # 只保留最近 10 次历史（避免上下文过大）
@@ -493,7 +493,7 @@ class ScanAgent(Agent):
             new_context["error_history"].append({
                 "tool": tool_name,
                 "error": result.get("error"),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
 
             # 只保留最近 5 次错误
