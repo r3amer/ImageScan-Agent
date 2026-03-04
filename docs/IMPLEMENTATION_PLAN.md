@@ -3,1491 +3,807 @@
 ## 文档信息
 
 - **项目名称**: ImageScan-Agent
-- **文档版本**: 1.0.0
-- **最后更新**: 2025-03-01
-- **文档状态**: 详细版（逐步构建序列）
+- **文档版本**: 2.0.0 (ScanAgent重构版)
+- **最后更新**: 2025-03-02
+- **文档状态**: 详细版（4阶段实施计划）
+- **上一版本**: 1.0.0 (主从Agent架构)
 
 ---
 
-## 目录
+## 📋 目录
 
-1. [构建总览](#构建总览)
-2. [阶段 0: 环境准备](#阶段-0-环境准备)
-3. [阶段 1: 基础设施层](#阶段-1-基础设施层)
-4. [阶段 2: 工具层](#阶段-2-工具层)
-5. [阶段 3: 数据层](#阶段-3-数据层)
-6. [阶段 4: LLM 集成层](#阶段-4-llm-集成层)
-7. [阶段 5: Agent 核心层](#阶段-5-agent-核心层)
-8. [阶段 6: CLI 界面层](#阶段-6-cli-界面层)
-9. [阶段 7: API 服务层](#阶段-7-api-服务层)
-10. [阶段 8: Web UI 层](#阶段-8-web-ui-层)
-11. [阶段 9: 测试与优化](#阶段-9-测试与优化)
-12. [阶段 10: 部署与文档](#阶段-10-部署与文档)
+1. [重构总览](#重构总览)
+2. [架构变更说明](#架构变更说明)
+3. [阶段 1: 规则引擎与配置](#阶段-1-规则引擎与配置)
+4. [阶段 2: LLM解析器与摘要管理](#阶段-2-llm解析器与摘要管理)
+5. [阶段 3: ScanAgent实现](#阶段-3-scanagent实现)
+6. [阶段 4: 集成与测试](#阶段-4-集成与测试)
+7. [验收标准总结](#验收标准总结)
 
 ---
 
-## 构建总览
+## 🔄 重构总览
 
-### MVP 范围
+### 为什么需要重构？
 
-- ✅ CLI + 基本扫描功能
-- ✅ SQLite 数据库持久化
-- ✅ 主从 Agent 系统（1 主 + 4 从）
-- ✅ 事件总线通信
-- ✅ 实时进度反馈
+**当前问题（v1.0）**：
+- 现有"主从Agent"系统实际上是伪Agent，智能体成熟度仅8%
+- LLM被动调用，不主动选择工具
+- 固定流程，无动态规划和决策能力
+- 多Agent串行调用，非真正协作
 
-### 构建顺序
+**重构目标（v2.0）**：
+- 实现单一智能体（ScanAgent）
+- LLM具备工具调用能力（手动解析函数调用字符串）
+- 动态规划，根据中间结果调整策略
+- 智能体成熟度提升至40%+
+
+### 核心设计决策
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| **Agent数量** | 单Agent (ScanAgent) | 简化架构，降低复杂度 |
+| **规划方式** | 动态规划 | 执行过程中根据结果调整策略 |
+| **LLM调用** | 手动解析函数调用字符串 | 不依赖Function Calling，更可控 |
+| **解析方式** | AST解析 | 安全、可靠 |
+| **错误处理** | 反馈重试 | LLM自我纠正 |
+| **上下文管理** | 规则生成摘要 | 减少Token消耗 |
+| **规则引擎** | 路径过滤 + 扩展名黑名单 | 快速筛选，减少LLM调用 |
+| **扫描流程** | 完整流程 | 框架固定 + LLM决策 |
+| **LLM决策点** | 多次 | 文件筛选、凭证评估、异常处理 |
+| **进度事件** | 关键节点反馈 | 扫描开始、层完成、凭证发现、扫描完成 |
+
+### 扫描流程设计
 
 ```
-阶段0: 环境准备
+用户输入 (镜像名称)
   ↓
-阶段1: 基础设施 (项目结构、配置、日志)
+[框架固定] Docker操作：docker.save, docker.pull, docker.inspect
   ↓
-阶段2: 工具层 (Docker、Tar、文件操作)
+[框架固定] Tar解压：tar.unpack, tar.list_layers
   ↓
-阶段3: 数据层 (SQLite、数据模型)
+[框架固定] 文件列表：file.list_layer_files
   ↓
-阶段4: LLM 集成 (Gemini、扫描器)
+[规则引擎] 路径过滤 + 扩展名黑名单
   ↓
-阶段5: Agent 核心 (主从 Agent、事件总线)
+[LLM决策1] 文件筛选：批量分析过滤后的文件，决定哪些需要扫描
   ↓
-阶段6: CLI (命令行界面)
+[框架固定] 内容扫描：对选定文件调用content_scanner (逐个扫描)
   ↓
-阶段7: API (FastAPI 后端)
+[LLM决策2] 凭证评估：批量评估发现的凭证，判断真实性
   ↓
-阶段8: Web UI (Next.js 前端)
+[LLM决策3] 异常处理：凭证验证失败时，决定保留/丢弃
   ↓
-阶段9: 测试 (单元测试、集成测试)
-  ↓
-阶段10: 部署 (Docker、文档)
+[框架固定] 结果输出：生成报告
 ```
 
 ---
 
-## 阶段 0: 环境准备
+## 🏗️ 架构变更说明
 
-### 目标
-搭建开发环境，确保所有依赖可用
+### ✅ 保留的部分（无需修改）
+
+- **工具层** (`imagescan/tools/`)
+  - `registry.py` - 工具注册表
+  - `docker_tools.py` - Docker工具
+  - `tar_tools.py` - Tar工具
+  - `file_tools.py` - 文件操作工具
+
+- **数据层** (`imagescan/models/`, `imagescan/utils/database.py`)
+  - `task.py` - ScanTask模型
+  - `credential.py` - Credential模型
+  - `layer.py` - ScanLayer模型
+  - `metadata.py` - ScanMetadata模型
+  - `database.py` - 数据库操作
+
+- **事件系统** (`imagescan/core/events.py`, `event_bus.py`)
+  - 保留但优化：历史大小1000→500，移除DEBUG事件
+
+### ❌ 删除的部分
+
+- `agents/master_agent.py`
+- `agents/executor_agent.py`
+- `agents/validation_agent.py`
+- `agents/reflection_agent.py`
+- `agents/knowledge_agent.py`
+- `tests/unit/test_*_agent.py` (所有Agent测试)
+
+- `core/agent.py` - 保留基类，供ScanAgent继承
+
+### 🆕 新建的部分
+
+- `imagescan/agents/scan_agent.py` - 单一智能体
+- `imagescan/utils/rules.py` - 规则引擎
+- `imagescan/core/llm_parser.py` - LLM函数调用字符串解析器
+- `imagescan/utils/summary.py` - 摘要管理器
+- `imagescan/core/content_scanner.py` (重构) - 保留读取功能，移除LLM调用
+
+### 🔧 重构的部分
+
+- `imagescan/core/filename_analyzer.py` - 移除LLM调用，改为规则过滤
+- `imagescan/core/content_scanner.py` - 完全重写，只保留文件读取功能
+- `config.toml` - 添加新配置项
+
+---
+
+## 阶段 1: 规则引擎与配置
+
+**目标**：实现规则引擎，更新配置系统
+
 
 ### 步骤
 
-#### 0.1 Python 环境设置
+#### 1.1 规则引擎实现
 
-```bash
-# 安装 Python 3.11.8
-pyenv install 3.11.8
-pyenv local 3.11.8
-
-# 验证版本
-python --version  # 应该输出 3.11.8
-
-# 升级 pip
-pip install --upgrade pip==23.3.1
-```
-
-#### 0.2 Node.js 环境设置
-
-```bash
-# 安装 Node.js 20.10.0 (LTS)
-nvm install 20.10.0
-nvm use 20.10.0
-
-# 验证版本
-node --version   # 应该输出 20.10.0
-npm --version    # 应该输出 10.2.4
-```
-
-#### 0.3 Docker 环境验证
-
-```bash
-# 验证 Docker 安装
-docker --version  # 应该 >= 24.0.7
-
-# 验证 Docker 可用
-docker ps  # 应该成功运行
-```
-
-#### 0.4 环境变量配置
-
-```bash
-# 创建 .env 文件
-cat > .env << EOF
-# Gemini API
-GEMINI_API_KEY=your_gemini_api_key_here
-
-# 路径配置
-IMAGE_TAR_PATH=./image_tar
-FILES_PATH=./files
-SECRETS_PATH=./secrets
-OUTPUT_PATH=./output
-DATA_PATH=./data
-
-# 日志配置
-LOG_LEVEL=INFO
-LOG_FORMAT=json
-EOF
-
-# 设置权限
-chmod 600 .env
-```
-
-#### 0.5 Git 仓库初始化
-
-```bash
-# 初始化 .gitignore
-cat > .gitignore << EOF
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
-
-# Node.js
-node_modules/
-.next/
-out/
-
-# 项目特定
-*.json
-tmp/
-image_tar/
-output/
-test*
-config*
-
-# 环境变量
-.env
-
-# IDE
-.vscode/
-.idea/
-EOF
-```
-
-### 验收标准
-
-- [ ] Python 3.11.8 已安装
-- [ ] Node.js 20.10.0 已安装
-- [ ] Docker 24.0.7+ 已安装并运行
-- [ ] .env 文件已创建
-- [ ] .gitignore 已配置
-
----
-
-## 阶段 1: 基础设施层
-
-### 目标
-建立项目结构、配置管理、日志系统
-
-### 步骤
-
-#### 1.1 创建项目结构
-
-```bash
-# 创建目录结构
-mkdir -p imagescan/{core,agents,tools,api,utils}
-mkdir -p imagescan/models
-mkdir -p tests/{unit,integration}
-mkdir -p docs
-mkdir -p data
-mkdir -p config
-
-# 目录结构
-imagescan/
-├── core/           # 核心抽象类
-├── agents/         # Agent 实现
-├── tools/          # 工具注册与实现
-├── api/            # FastAPI 端点
-├── utils/          # 工具函数
-└── models/         # 数据模型
-```
-
-#### 1.2 配置管理模块
-
-**文件**: `imagescan/utils/config.py`
+**新建文件**: `imagescan/utils/rules.py`
 
 ```python
-from pydantic_settings import BaseSettings
 from typing import List
-import toml
-from pathlib import Path
+import os
 
-class FilterRules(BaseModel):
-    prefix_exclude: List[str] = []
-    low_probability_keywords: List[str] = []
+class RuleEngine:
+    """规则引擎 - 路径和扩展名过滤"""
 
-class ScanParameters(BaseModel):
-    confidence_threshold: float = 0.7
-    max_file_size_mb: int = 10
-    max_layers: int = 100
-    enable_verification: bool = True
-    verification_mode: str = "static"
+    def __init__(self, config):
+        self.prefix_exclude = config.filter_rules.prefix_exclude
+        self.extension_blacklist = config.filter_rules.extension_blacklist
 
-class SystemConfig(BaseModel):
-    log_level: str = "INFO"
-    log_format: str = "json"
-    log_rotation_days: int = 7
-    max_workers: int = 4
-
-class StorageConfig(BaseModel):
-    output_path: str = "./output"
-    database_path: str = "./data/scanner.db"
-    chromadb_path: str = "./data/chromadb"
-
-class APIConfig(BaseModel):
-    gemini_api_key: str
-    base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
-    model: str = "gemini-2.5-flash"
-    timeout_seconds: int = 60
-
-class Config(BaseModel):
-    api: APIConfig
-    filter_rules: FilterRules
-    scan_parameters: ScanParameters
-    system: SystemConfig
-    storage: StorageConfig
-
-    @classmethod
-    def load(cls, path: str = "config.toml") -> "Config":
-        data = toml.load(path)
-        return cls(**data)
-
-# 使用示例
-config = Config.load()
-```
-
-#### 1.3 日志系统
-
-**文件**: `imagescan/utils/logger.py`
-
-```python
-import structlog
-import logging
-from pathlib import Path
-from typing import Any
-
-def setup_logging(
-    level: str = "INFO",
-    log_format: str = "json",
-    log_path: str = "./logs"
-):
-    """配置结构化日志"""
-
-    # 确保日志目录存在
-    Path(log_path).mkdir(parents=True, exist_ok=True)
-
-    # 配置 structlog
-    if log_format == "json":
-        structlog.configure(
-            processors=[
-                structlog.stdlib.filter_by_level,
-                structlog.stdlib.add_logger_name,
-                structlog.stdlib.add_log_level,
-                structlog.stdlib.PositionalArgumentsFormatter(),
-                structlog.processors.TimeStamper("iso"),
-                structlog.processors.StackInfoRenderer(),
-                structlog.processors.format_exc_info,
-                structlog.processors.UnicodeDecoder(),
-                structlog.processors.JSONRenderer()
-            ],
-            context_class=dict,
-            logger_factory=structlog.stdlib.LoggerFactory(),
-            cache_logger_on_first_use=True,
-        )
-    else:
-        structlog.configure(
-            processors=[
-                structlog.dev.ConsoleRenderer()
-            ]
-        )
-
-    # 设置标准库日志级别
-    logging.basicConfig(
-        level=getattr(logging, level),
-        format="%(message)s"
-    )
-
-def get_logger(name: str) -> Any:
-    """获取 logger 实例"""
-    return structlog.get_logger(name)
-
-# 使用示例
-logger = get_logger(__name__)
-logger.info("Scanner started", task_id="abc-123")
-```
-
-#### 1.4 配置文件
-
-**文件**: `config.toml`
-
-```toml
-[api]
-gemini_api_key = "${GEMINI_API_KEY}"
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-model = "gemini-2.5-flash"
-timeout_seconds = 60
-
-[filter_rules]
-prefix_exclude = [
-    "/usr",
-    "/lib",
-    "/bin",
-    "/etc/ssl",
-    "/var/lib"
-]
-low_probability_keywords = [
-    "node_modules",
-    ".git",
-    "__pycache__"
-]
-
-[scan_parameters]
-confidence_threshold = 0.7
-max_file_size_mb = 10
-max_layers = 100
-enable_verification = true
-verification_mode = "static"
-
-[system]
-log_level = "INFO"
-log_format = "json"
-log_rotation_days = 7
-max_workers = 4
-
-[storage]
-output_path = "./output"
-database_path = "./data/scanner.db"
-chromadb_path = "./data/chromadb"
-```
-
-### 验收标准
-
-- [ ] 项目目录结构已创建
-- [ ] 配置管理模块可加载 config.toml
-- [ ] 日志系统输出结构化 JSON 日志
-- [ ] 环境变量正确替换
-
----
-
-## 阶段 2: 工具层
-
-### 目标
-实现 Docker、Tar、文件操作工具
-
-### 步骤
-
-#### 2.1 工具注册表
-
-**文件**: `imagescan/tools/registry.py`
-
-```python
-from typing import Dict, Callable, Any
-import inspect
-
-class ToolRegistry:
-    """工具注册表"""
-
-    def __init__(self):
-        self._tools: Dict[str, Callable] = {}
-
-    def register(self, name: str = None):
-        """装饰器：注册工具"""
-        def decorator(func: Callable) -> Callable:
-            tool_name = name or func.__name__
-            self._tools[tool_name] = func
-            return func
-        return decorator
-
-    def get(self, name: str) -> Callable:
-        """获取工具"""
-        if name not in self._tools:
-            raise ValueError(f"Tool not found: {name}")
-        return self._tools[name]
-
-    def list_tools(self) -> Dict[str, str]:
-        """列出所有工具"""
-        return {
-            name: func.__doc__ or "No description"
-            for name, func in self._tools.items()
-        }
-
-    def get_schema(self, name: str) -> Dict[str, Any]:
-        """获取工具的 JSON Schema"""
-        func = self.get(name)
-        sig = inspect.signature(func)
-        return {
-            "name": name,
-            "description": func.__doc__,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    name: {
-                        "type": "string",
-                        "description": param.annotation.__name__ if hasattr(param.annotation, '__name__') else str(param.annotation)
-                    }
-                    for name, param in sig.parameters.items()
-                }
-            }
-        }
-
-# 全局注册表
-registry = ToolRegistry()
-```
-
-#### 2.2 Docker 工具
-
-**文件**: `imagescan/tools/docker_tools.py`
-
-```python
-import docker
-from pathlib import Path
-from ..tools.registry import registry
-from ..utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-class DockerImageNotFound(Exception):
-    pass
-
-class DockerSaveError(Exception):
-    pass
-
-@registry.register("docker.save")
-async def docker_save(image_name: str, output_path: str) -> str:
-    """
-    保存 Docker 镜像为 tar 文件
-
-    Args:
-        image_name: 镜像名称 (如 "nginx:latest")
-        output_path: 输出目录路径
-
-    Returns:
-        tar_file_path: 保存的 tar 文件路径
-    """
-    logger.info("Saving Docker image", image=image_name)
-
-    try:
-        client = docker.from_env()
-        image = client.images.get(image_name)
-
-        # 确保输出目录存在
-        Path(output_path).mkdir(parents=True, exist_ok=True)
-
-        # 构建输出文件名
-        safe_name = image_name.replace(":", "_").replace("/", "_")
-        tar_path = f"{output_path}/{safe_name}.tar"
-
-        # 保存镜像
-        await asyncio.to_thread(image.save, tar_path)
-
-        logger.info("Docker image saved", path=tar_path)
-        return tar_path
-
-    except docker.errors.ImageNotFound as e:
-        logger.error("Image not found", image=image_name)
-        raise DockerImageNotFound(str(e))
-    except Exception as e:
-        logger.error("Failed to save image", error=str(e))
-        raise DockerSaveError(str(e))
-```
-
-#### 2.3 Tar 工具
-
-**文件**: `imagescan/tools/tar_tools.py`
-
-```python
-import tarfile
-from pathlib import Path
-from ..tools.registry import registry
-from ..utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-@registry.register("tar.unpack")
-async def tar_unpack(tar_path: str, extract_path: str) -> dict:
-    """
-    解压 tar 文件
-
-    Args:
-        tar_path: tar 文件路径
-        extract_path: 解压目标路径
-
-    Returns:
-        manifest: manifest.json 内容
-    """
-    logger.info("Unpacking tar", tar=tar_path)
-
-    try:
-        # 确保目标目录存在
-        Path(extract_path).mkdir(parents=True, exist_ok=True)
-
-        # 解压 tar 文件
-        await asyncio.to_thread(
-            lambda: tarfile.open(tar_path).extractall(extract_path)
-        )
-
-        # 读取 manifest.json
-        manifest_path = f"{extract_path}/manifest.json"
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-
-        logger.info("Tar unpacked", path=extract_path)
-        return manifest
-
-    except Exception as e:
-        logger.error("Failed to unpack tar", error=str(e))
-        raise
-```
-
-#### 2.4 文件操作工具
-
-**文件**: `imagescan/tools/file_tools.py`
-
-```python
-import tarfile
-import aiofiles
-from pathlib import Path
-from ..tools.registry import registry
-from ..utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-@registry.register("file.list_layer_files")
-async def file_list_layer_files(layer_tar_path: str) -> list[str]:
-    """
-    列出层中的所有文件
-
-    Args:
-        layer_tar_path: 层 tar 文件路径
-
-    Returns:
-        files: 文件路径列表
-    """
-    logger.debug("Listing layer files", layer=layer_tar_path)
-
-    try:
-        with tarfile.open(layer_tar_path) as tar:
-            return tar.getnames()
-    except Exception as e:
-        logger.error("Failed to list files", error=str(e))
-        raise
-
-@registry.register("file.extract_from_layer")
-async def file_extract_from_layer(
-    layer_tar_path: str,
-    file_path: str,
-    output_path: str
-) -> str:
-    """
-    从层中提取单个文件
-
-    Args:
-        layer_tar_path: 层 tar 文件路径
-        file_path: 文件在层中的路径
-        output_path: 输出目录路径
-
-    Returns:
-        extracted_path: 提取后的文件路径
-    """
-    logger.debug("Extracting file", file=file_path)
-
-    try:
-        with tarfile.open(layer_tar_path) as tar:
-            member = tar.getmember(file_path)
-
-            # 确保输出目录存在
-            output_dir = Path(output_path) / Path(file_path).parent
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            # 提取文件
-            await asyncio.to_thread(
-                lambda: tar.extract(member, output_path)
-            )
-
-            extracted_path = f"{output_path}/{file_path}"
-            logger.debug("File extracted", path=extracted_path)
-            return extracted_path
-
-    except Exception as e:
-        logger.error("Failed to extract file", error=str(e))
-        raise
-
-@registry.register("file.read_content")
-async def file_read_content(file_path: str) -> str:
-    """
-    读取文件内容
-
-    Args:
-        file_path: 文件路径
-
-    Returns:
-        content: 文件内容
-    """
-    try:
-        async with aiofiles.open(file_path, mode='r') as f:
-            content = await f.read()
-            return content
-    except Exception as e:
-        logger.error("Failed to read file", error=str(e))
-        raise
-```
-
-### 验收标准
-
-- [ ] 工具注册表可注册和调用工具
-- [ ] docker.save() 成功保存镜像为 tar
-- [ ] tar.unpack() 成功解压 tar 文件
-- [ ] file_extract_from_layer() 成功提取文件
-- [ ] 所有工具支持异步操作
-
----
-
-## 阶段 3: 数据层
-
-### 目标
-实现 SQLite 数据库和数据模型
-
-### 步骤
-
-#### 3.1 数据模型定义
-
-**文件**: `imagescan/models/task.py`
-
-```python
-from pydantic import BaseModel, Field
-from datetime import datetime
-from enum import Enum
-from typing import Optional, Dict, Any
-import uuid
-
-class ScanStatus(str, Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-class ScanTask(BaseModel):
-    task_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    image_name: str
-    image_id: str
-    status: ScanStatus = ScanStatus.PENDING
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    error_message: Optional[str] = None
-    total_layers: int = 0
-    processed_layers: int = 0
-    total_files: int = 0
-    processed_files: int = 0
-    credentials_found: int = 0
-```
-
-**文件**: `imagescan/models/credential.py`
-
-```python
-class CredentialType(str, Enum):
-    API_KEY = "api_key"
-    PASSWORD = "password"
-    TOKEN = "token"
-    CERTIFICATE = "certificate"
-    PRIVATE_KEY = "private_key"
-    DATABASE_URL = "database_url"
-    AWS_KEY = "aws_key"
-    SSH_KEY = "ssh_key"
-    UNKNOWN = "unknown"
-
-class ValidationStatus(str, Enum):
-    PENDING = "pending"
-    VALID = "valid"
-    INVALID = "invalid"
-    UNKNOWN = "unknown"
-    SKIPPED = "skipped"
-
-class Credential(BaseModel):
-    credential_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    task_id: str
-    cred_type: CredentialType
-    confidence: float
-    file_path: str
-    line_number: Optional[int] = None
-    layer_id: str
-    context: str
-    raw_value: Optional[str] = None
-    validation_status: ValidationStatus = ValidationStatus.PENDING
-    verified_at: Optional[datetime] = None
-    metadata: Dict[str, Any] = {}
-```
-
-#### 3.2 数据库初始化
-
-**文件**: `imagescan/utils/database.py`
-
-```python
-import aiosqlite
-from pathlib import Path
-from ..utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-class Database:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-
-    async def init(self):
-        """初始化数据库表"""
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-
-        async with aiosqlite.connect(self.db_path) as db:
-            # 启用外键约束
-            await db.execute("PRAGMA foreign_keys = ON")
-
-            # 创建 scan_tasks 表
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS scan_tasks (
-                    task_id TEXT PRIMARY KEY,
-                    image_name TEXT NOT NULL,
-                    image_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    created_at TIMESTAMP NOT NULL,
-                    started_at TIMESTAMP,
-                    completed_at TIMESTAMP,
-                    error_message TEXT,
-                    total_layers INTEGER NOT NULL DEFAULT 0,
-                    processed_layers INTEGER NOT NULL DEFAULT 0,
-                    total_files INTEGER NOT NULL DEFAULT 0,
-                    processed_files INTEGER NOT NULL DEFAULT 0,
-                    credentials_found INTEGER NOT NULL DEFAULT 0
-                )
-            """)
-
-            # 创建 credentials 表
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS credentials (
-                    credential_id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
-                    cred_type TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    file_path TEXT NOT NULL,
-                    line_number INTEGER,
-                    layer_id TEXT NOT NULL,
-                    context TEXT NOT NULL,
-                    raw_value TEXT,
-                    validation_status TEXT NOT NULL,
-                    verified_at TIMESTAMP,
-                    metadata TEXT,
-                    FOREIGN KEY (task_id) REFERENCES scan_tasks(task_id) ON DELETE CASCADE
-                )
-            """)
-
-            # 创建索引
-            await db.execute("""
-                CREATE INDEX IF NOT EXISTS idx_credentials_task_id
-                ON credentials(task_id)
-            """)
-
-            await db.commit()
-            logger.info("Database initialized", path=self.db_path)
-
-    async def insert_task(self, task: ScanTask) -> str:
-        """插入扫描任务"""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT INTO scan_tasks (
-                    task_id, image_name, image_id, status, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (task.task_id, task.image_name, task.image_id,
-                 task.status.value, task.created_at.isoformat())
-            )
-            await db.commit()
-            return task.task_id
-
-    async def update_task_status(
-        self,
-        task_id: str,
-        status: str,
-        **kwargs
-    ):
-        """更新任务状态"""
-        async with aiosqlite.connect(self.db_path) as db:
-            updates = ["status = ?"]
-            values = [status]
-
-            for key, value in kwargs.items():
-                updates.append(f"{key} = ?")
-                values.append(value)
-
-            values.append(task_id)
-
-            await db.execute(
-                f"UPDATE scan_tasks SET {', '.join(updates)} WHERE task_id = ?",
-                values
-            )
-            await db.commit()
-
-    async def insert_credential(self, cred: Credential) -> str:
-        """插入凭证"""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT INTO credentials (
-                    credential_id, task_id, cred_type, confidence,
-                    file_path, line_number, layer_id, context,
-                    validation_status, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    cred.credential_id, cred.task_id, cred.cred_type.value,
-                    cred.confidence, cred.file_path, cred.line_number,
-                    cred.layer_id, cred.context, cred.validation_status.value,
-                    json.dumps(cred.metadata)
-                )
-            )
-            await db.commit()
-            return cred.credential_id
-```
-
-### 验收标准
-
-- [ ] 数据库表成功创建
-- [ ] ScanTask 和 Credential 模型定义完整
-- [ ] 数据库可插入和更新记录
-- [ ] 外键约束正常工作
-
----
-
-## 阶段 4: LLM 集成层
-
-### 目标
-实现 Gemini API 集成和 LLM 扫描器
-
-### 步骤
-
-#### 4.1 LLM 客户端
-
-**文件**: `imagescan/core/llm_client.py`
-
-```python
-from openai import AsyncOpenAI
-from ..utils.config import Config
-from ..utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-class LLMClient:
-    def __init__(self, config: Config):
-        self.config = config
-        self.client = AsyncOpenAI(
-            api_key=config.api.gemini_api_key,
-            base_url=config.api.base_url
-        )
-        self.model = config.api.model
-
-    async def think(self, prompt: str, system_prompt: str = None) -> dict:
+    def filter_files(self, files: List[str]) -> List[str]:
         """
-        通用 LLM 调用
-
-        Args:
-            prompt: 用户提示
-            system_prompt: 系统提示
-
-        Returns:
-            response: JSON 格式响应
-        """
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                response_mime_type="application/json"
-            )
-            return json.loads(response.choices[0].message.content)
-        except Exception as e:
-            logger.error("LLM call failed", error=str(e))
-            raise
-```
-
-#### 4.2 文件名分析器
-
-**文件**: `imagescan/core/filename_analyzer.py`
-
-```python
-SYSTEM_PROMPT = """
-你是 Docker 镜像文件安全分析专家。
-你的任务是分析文件名，判断哪些文件可能包含敏感凭证。
-
-判断标准:
-- .env, .config, config.json: 高风险
-- *.pem, *.key, *.cert: 证书/私钥，高风险
-- docker-compose.yml, k8s/*.yaml: 可能包含密钥
-- __pycache__, node_modules: 低风险（系统目录）
-
-返回 JSON 格式:
-{
-    "high_risk": ["文件路径"],
-    "medium_risk": ["文件路径"],
-    "low_risk": ["文件路径"]
-}
-"""
-
-class FilenameAnalyzer:
-    def __init__(self, llm_client: LLMClient):
-        self.llm = llm_client
-
-    async def analyze(self, files: list[str]) -> dict:
-        """
-        分析文件名
+        应用规则过滤文件列表
 
         Args:
             files: 文件路径列表
 
         Returns:
-            classification: 文件分类结果
+            filtered_files: 过滤后的文件列表
         """
-        prompt = f"""
-        分析以下文件列表，判断哪些可能包含敏感凭证:
+        filtered = []
 
-        {json.dumps(files, indent=2)}
+        for file_path in files:
+            # 1. 路径前缀过滤
+            if self._match_prefix_exclude(file_path):
+                continue
 
-        返回 JSON 格式分类。
-        """
+            # 2. 扩展名黑名单过滤
+            if self._match_extension_blacklist(file_path):
+                continue
 
-        response = await self.llm.think(prompt, SYSTEM_PROMPT)
-        return response
+            filtered.append(file_path)
+
+        return filtered
+
+    def _match_prefix_exclude(self, file_path: str) -> bool:
+        """检查是否匹配前缀排除规则"""
+        for prefix in self.prefix_exclude:
+            if file_path.startswith(prefix):
+                return True
+        return False
+
+    def _match_extension_blacklist(self, file_path: str) -> bool:
+        """检查是否匹配扩展名黑名单"""
+        ext = os.path.splitext(file_path)[1].lower()
+        return ext in self.extension_blacklist
 ```
 
-#### 4.3 内容扫描器
+**验收标准**：
+- [ ] 规则引擎可正确过滤文件路径
+- [ ] 前缀排除规则正常工作
+- [ ] 扩展名黑名单正常工作
+
+#### 1.2 配置文件更新
+
+**文件**: `config.toml`
+
+**新增配置项**：
+
+```toml
+[filter_rules]
+# 现有配置
+prefix_exclude = ["/usr", "/lib", "/bin", "/etc/ssl", "/var/lib"]
+low_probability_keywords = ["node_modules", ".git", "__pycache__"]
+
+# 新增：扩展名黑名单
+extension_blacklist = [
+    ".png", ".jpg", ".jpeg", ".gif", ".ico",  # 图片
+    ".mp4", ".mp3", ".wav",  # 媒体
+    ".zip", ".tar", ".gz", ".bz2",  # 压缩包
+    ".so", ".dll", ".exe",  # 二进制
+]
+
+[llm]
+# Token限制（分级）
+filename_analysis_tokens = 1000
+credential_evaluation_tokens = 2000
+exception_handling_tokens = 500
+
+# 超时配置
+timeout_seconds = 60
+
+# 摘要阈值
+summary_token_threshold = 10000
+```
+
+**验收标准**：
+- [ ] 配置文件包含所有新配置项
+- [ ] 配置可正确加载
+
+#### 1.3 重构filename_analyzer
+
+**文件**: `imagescan/core/filename_analyzer.py`
+
+**变更**：
+- 移除LLM调用逻辑
+- 改为调用规则引擎
+- 保持接口不变
+
+```python
+class FilenameAnalyzer:
+    """文件名分析器 - 使用规则引擎过滤"""
+
+    def __init__(self, rule_engine: RuleEngine):
+        self.rule_engine = rule_engine
+
+    def analyze(self, files: List[str]) -> dict:
+        """
+        分析文件名（使用规则引擎）
+
+        Args:
+            files: 文件路径列表
+
+        Returns:
+            分类结果
+        """
+        filtered = self.rule_engine.filter_files(files)
+
+        return {
+            "filtered_files": filtered,
+            "excluded_count": len(files) - len(filtered),
+            "total_count": len(files)
+        }
+```
+
+**验收标准**：
+- [ ] filename_analyzer不再调用LLM
+- [ ] 使用规则引擎过滤文件
+- [ ] 接口保持兼容
+
+---
+
+## 阶段 2: LLM解析器与摘要管理
+
+**目标**：实现LLM函数调用字符串解析器和摘要管理器
+
+
+### 步骤
+
+#### 2.1 LLM函数调用字符串解析器
+
+**新建文件**: `imagescan/core/llm_parser.py`
+
+```python
+import ast
+from typing import Dict, Any, Optional, List
+
+class LLMFunctionCallParser:
+    """LLM函数调用字符串解析器"""
+
+    def __init__(self, max_retries: int = 3):
+        self.max_retries = max_retries
+
+    def parse(self, llm_output: str) -> Dict[str, Any]:
+        """
+        解析LLM输出的函数调用字符串
+
+        Args:
+            llm_output: LLM输出文本，如 docker_save("nginx:latest", "./output.tar")
+
+        Returns:
+            {function_name: str, args: Dict}
+
+        Raises:
+            ParseError: 解析失败
+        """
+        call_str = self._extract_call_string(llm_output)
+        if not call_str:
+            raise ParseError("No function call found")
+
+        try:
+            tree = ast.parse(call_str, mode='eval')
+            call = tree.body
+
+            if not isinstance(call, ast.Call):
+                raise ParseError("Not a function call")
+
+            func_name = self._get_function_name(call)
+            args = self._parse_arguments(call)
+
+            return {"function_name": func_name, "args": args}
+        except (SyntaxError, ValueError) as e:
+            raise ParseError(f"Parse error: {e}")
+
+    def _extract_call_string(self, llm_output: str) -> Optional[str]:
+        """从LLM输出中提取函数调用字符串"""
+        lines = llm_output.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            if '(' in line and ')' in line:
+                return line
+        return None
+
+    def _get_function_name(self, call: ast.Call) -> str:
+        """获取函数名"""
+        if isinstance(call.func, ast.Name):
+            return call.func.id
+        elif isinstance(call.func, ast.Attribute):
+            return call.func.attr
+        raise ParseError("Unsupported function type")
+
+    def _parse_arguments(self, call: ast.Call) -> Dict[str, Any]:
+        """解析函数参数"""
+        args = []
+        for arg in call.args:
+            args.append(self._parse_value(arg))
+
+        kwargs = {}
+        for keyword in call.keywords:
+            if keyword.arg:
+                kwargs[keyword.arg] = self._parse_value(keyword.value)
+
+        return {"args": args, "kwargs": kwargs}
+
+    def _parse_value(self, node) -> Any:
+        """解析AST节点为Python值"""
+        if isinstance(node, ast.Constant):
+            return node.value
+        elif isinstance(node, ast.Str):
+            return node.s
+        elif isinstance(node, ast.Num):
+            return node.n
+        elif isinstance(node, ast.List):
+            return [self._parse_value(e) for e in node.elts]
+        raise ParseError(f"Unsupported value type: {type(node)}")
+
+
+class ParseError(Exception):
+    """解析错误"""
+    pass
+```
+
+**验收标准**：
+- [ ] 可解析 `docker_save("nginx", "./out")`
+- [ ] 可解析多参数函数调用
+- [ ] 解析失败抛出ParseError
+- [ ] AST解析安全
+
+#### 2.2 摘要管理器
+
+**新建文件**: `imagescan/utils/summary.py`
+
+```python
+from typing import List, Dict
+from datetime import datetime
+import json
+
+class SummaryManager:
+    """摘要管理器 - 规则生成摘要"""
+
+    def __init__(self, token_threshold: int = 10000):
+        self.token_threshold = token_threshold
+        self.conversation_history: List[Dict] = []
+
+    def add_message(self, role: str, content: str):
+        """添加对话消息"""
+        self.conversation_history.append({
+            "role": role,
+            "content": content,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+    def should_summarize(self) -> bool:
+        """判断是否需要生成摘要"""
+        total_chars = sum(len(msg["content"]) for msg in self.conversation_history)
+        estimated_tokens = total_chars / 4
+        return estimated_tokens > self.token_threshold
+
+    def summarize(self) -> str:
+        """生成摘要"""
+        parts = []
+
+        # 工具调用统计
+        tool_calls = self._extract_tool_calls()
+        parts.append(f"工具调用: {len(tool_calls)}次")
+        if tool_calls:
+            parts.append("使用工具: " + ", ".join(set(tool_calls)))
+
+        # 凭证统计
+        creds = self._extract_credentials_count()
+        parts.append(f"发现凭证: {creds}个")
+
+        # 错误统计
+        errors = self._extract_errors()
+        if errors:
+            parts.append(f"错误: {len(errors)}个")
+
+        parts.append(f"对话轮次: {len(self.conversation_history)}")
+
+        return "\n".join(parts)
+
+    def get_context(self) -> List[Dict]:
+        """获取用于LLM调用的上下文"""
+        if self.should_summarize():
+            summary = self.summarize()
+            return [
+                {"role": "system", "content": f"对话摘要:\n{summary}"},
+                *self.conversation_history[-5:]
+            ]
+        return self.conversation_history
+
+    def _extract_tool_calls(self) -> List[str]:
+        """提取工具调用"""
+        calls = []
+        for msg in self.conversation_history:
+            if msg["role"] == "tool":
+                try:
+                    data = json.loads(msg["content"])
+                    if "tool" in data:
+                        calls.append(data["tool"])
+                except:
+                    pass
+        return calls
+
+    def _extract_credentials_count(self) -> int:
+        """提取凭证数量"""
+        count = 0
+        for msg in self.conversation_history:
+            if "credential" in msg["content"].lower():
+                count += msg["content"].count("credential")
+        return count
+
+    def _extract_errors(self) -> List[str]:
+        """提取错误"""
+        return [msg["content"] for msg in self.conversation_history if msg["role"] == "error"]
+```
+
+**验收标准**：
+- [ ] 追踪对话历史
+- [ ] 超过阈值时触发摘要
+- [ ] 摘要包含关键信息
+- [ ] get_context返回正确上下文
+
+#### 2.3 重构content_scanner
 
 **文件**: `imagescan/core/content_scanner.py`
 
+**变更**：移除LLM调用，只保留文件读取
+
 ```python
-SYSTEM_PROMPT = """
-你是凭证检测专家，专门识别 Docker 镜像中的敏感凭证。
-
-检测目标:
-1. API Keys (AWS, Google, GitHub, etc.)
-2. 密码
-3. Tokens (JWT, OAuth, Bearer)
-4. 证书/私钥 (PEM, KEY)
-5. 数据库连接串
-
-返回 JSON 格式:
-{
-    "credentials": [
-        {
-            "type": "api_key",
-            "value": "AKIAIOSFODNN7EXAMPLE",
-            "line_number": 10,
-            "context": "AWS_ACCESS_KEY: AKIA...",
-            "confidence": 0.95
-        }
-    ]
-}
-
-注意:
-- 只返回真正看起来像凭证的内容
-- 提供足够的上下文（前后2行）
-- 置信度范围 0.0 - 1.0
-"""
+import aiofiles
+import os
 
 class ContentScanner:
-    def __init__(self, llm_client: LLMClient):
-        self.llm = llm_client
+    """内容扫描器 - 只负责读取文件"""
 
-    async def scan(
-        self,
-        file_path: str,
-        content: str,
-        max_length: int = 10000
-    ) -> list:
-        """
-        扫描文件内容
+    async def read_file(self, file_path: str, max_size: int = 1024 * 1024) -> Optional[str]:
+        """读取文件内容"""
+        if os.path.getsize(file_path) > max_size:
+            return None
 
-        Args:
-            file_path: 文件路径
-            content: 文件内容
-            max_length: 最大内容长度（避免 token 超限）
+        try:
+            async with aiofiles.open(file_path, 'r') as f:
+                return await f.read()
+        except Exception as e:
+            logger.error("Read failed", path=file_path, error=str(e))
+            return None
 
-        Returns:
-            credentials: 检测到的凭证列表
-        """
-        # 截断过长内容
-        if len(content) > max_length:
-            content = content[:max_length]
+    async def read_binary_file(self, file_path: str, max_size: int = 1024 * 1024) -> Optional[bytes]:
+        """读取二进制文件"""
+        if os.path.getsize(file_path) > max_size:
+            return None
 
-        prompt = f"""
-        文件: {file_path}
-        内容:
-        {content}
-
-        检测敏感凭证，返回 JSON 格式。
-        """
-
-        response = await self.llm.think(prompt, SYSTEM_PROMPT)
-        return response.get("credentials", [])
+        try:
+            async with aiofiles.open(file_path, 'rb') as f:
+                return await f.read()
+        except Exception as e:
+            logger.error("Read binary failed", path=file_path, error=str(e))
+            return None
 ```
 
-### 验收标准
-
-- [ ] LLMClient 可成功调用 Gemini API
-- [ ] FilenameAnalyzer 可正确分类文件
-- [ ] ContentScanner 可检测凭证
-- [ ] 所有响应为 JSON 格式
+**验收标准**：
+- [ ] content_scanner不再调用LLM
+- [ ] 正确读取文本/二进制文件
+- [ ] 文件大小限制正常工作
 
 ---
 
-## 阶段 5: Agent 核心层
+## 阶段 3: ScanAgent实现
 
-### 目标
-实现主从 Agent 系统和事件总线
+**目标**：实现单一智能体ScanAgent
 
-### 步骤
 
-#### 5.1 事件定义
+### 核心设计
 
-**文件**: `imagescan/core/events.py`
+**新建文件**: `imagescan/agents/scan_agent.py`
 
 ```python
-from pydantic import BaseModel
-from datetime import datetime
-from typing import Literal, Optional
+class ScanAgent(Agent):
+    """
+    扫描智能体 - 单一智能体实现
 
-class TaskCreatedEvent(BaseModel):
-    event_type: Literal["task.created"] = "task.created"
-    task_id: str
-    image_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    职责：
+    1. 执行扫描流程（框架固定部分 + LLM决策部分）
+    2. 多次LLM决策：文件筛选、凭证评估、异常处理
+    3. 工具调用：手动解析函数调用字符串
+    """
 
-class LayerExtractedEvent(BaseModel):
-    event_type: Literal["layer.extracted"] = "layer.extracted"
-    task_id: str
-    layers: list[dict]
-
-class FilenameAnalyzedEvent(BaseModel):
-    event_type: Literal["filename.analyzed"] = "filename.analyzed"
-    task_id: str
-    layer_id: str
-    classification: dict
-
-class CredentialFoundEvent(BaseModel):
-    event_type: Literal["credential.found"] = "credential.found"
-    task_id: str
-    credential: dict
-
-class TaskCompletedEvent(BaseModel):
-    event_type: Literal["task.completed"] = "task.completed"
-    task_id: str
-    status: str
-    credentials_count: int
-    duration_seconds: float
-```
-
-#### 5.2 事件总线
-
-**文件**: `imagescan/core/event_bus.py`
-
-```python
-import asyncio
-from typing import Callable, Dict
-from ..utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-class EventBus:
-    def __init__(self):
-        self.queue: asyncio.Queue = asyncio.Queue()
-        self.subscribers: Dict[str, list[Callable]] = {}
-
-    def subscribe(self, event_type: str, callback: Callable):
-        """订阅事件"""
-        if event_type not in self.subscribers:
-            self.subscribers[event_type] = []
-        self.subscribers[event_type].append(callback)
-        logger.debug("Subscriber added", event=event_type)
-
-    async def publish(self, event: BaseModel):
-        """发布事件"""
-        await self.queue.put(event)
-        logger.debug("Event published", type=event.event_type)
-
-    async def dispatch(self, event: BaseModel):
-        """分发事件给订阅者"""
-        event_type = event.event_type
-        if event_type in self.subscribers:
-            for callback in self.subscribers[event_type]:
-                try:
-                    await callback(event)
-                except Exception as e:
-                    logger.error("Subscriber failed", error=str(e))
-
-    async def run(self):
-        """运行事件总线"""
-        while True:
-            event = await self.queue.get()
-            await self.dispatch(event)
-            self.queue.task_done()
-```
-
-#### 5.3 基础 Agent
-
-**文件**: `imagescan/core/agent.py`
-
-```python
-from abc import ABC, abstractmethod
-from ..core.event_bus import EventBus
-from ..utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-class Agent(ABC):
-    def __init__(self, event_bus: EventBus, name: str):
-        self.event_bus = event_bus
-        self.name = name
-        self.logger = logger.bind(agent=name)
-
-    @abstractmethod
-    async def run(self):
-        """运行 Agent"""
-        pass
-```
-
-#### 5.4 主 Agent
-
-**文件**: `imagescan/agents/master_agent.py`
-
-```python
-from ..core.agent import Agent
-from ..core.events import *
-from ..core.llm_client import LLMClient
-from ..utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-class MasterAgent(Agent):
-    def __init__(
-        self,
-        event_bus: EventBus,
-        llm_client: LLMClient,
-        task_id: str,
-        image_name: str
-    ):
-        super().__init__(event_bus, "master")
+    def __init__(self, event_bus, llm_client, tool_registry, rule_engine,
+                 summary_manager, content_scanner, task_id, image_name, config):
+        super().__init__(event_bus, "scan_agent")
         self.llm = llm_client
+        self.tools = tool_registry
+        self.rule_engine = rule_engine
+        self.summary = summary_manager
+        self.scanner = content_scanner
         self.task_id = task_id
         self.image_name = image_name
+        self.config = config
+        self.parser = LLMFunctionCallParser()
         self.credentials = []
 
     async def run(self):
-        """运行主 Agent"""
-        self.logger.info("Master agent started", task_id=self.task_id)
+        """运行扫描智能体"""
+        # 1. 框架：Docker操作
+        await self._docker_operations()
 
-        # 订阅事件
-        self.event_bus.subscribe("credential.found", self.on_credential_found)
-        self.event_bus.subscribe("task.completed", self.on_task_completed)
+        # 2. 框架：Tar解压
+        layers = await self._tar_extraction()
 
-        # 1. 制定计划
-        plan = await self.create_plan()
-        self.logger.info("Plan created", plan=plan)
+        # 3. 框架：文件列表
+        all_files = await self._collect_all_files(layers)
 
-        # 2. 分发任务
-        await self.event_bus.publish(LayerExtractionRequest(
-            task_id=self.task_id,
-            image_name=self.image_name
-        ))
+        # 4. 规则引擎：过滤
+        filtered_files = self.rule_engine.filter_files(all_files)
 
-    async def create_plan(self) -> dict:
-        """制定扫描计划"""
-        prompt = f"""
-        任务: 扫描 Docker 镜像 {self.image_name}
+        # 5. LLM决策1：文件筛选
+        files_to_scan = await self._llm_filename_decision(filtered_files)
 
-        请制定扫描计划:
-        1. 保存镜像为 tar
-        2. 解压 tar 获取层列表
-        3. 逐层分析文件名
-        4. 提取可疑文件内容
-        5. LLM 分析内容检测凭证
-        6. 生成报告
+        # 6. 框架：内容扫描
+        scan_results = await self._scan_files(files_to_scan, layers)
 
-        返回 JSON 格式计划。
-        """
+        # 7. LLM决策2：凭证评估
+        validated_credentials = await self._llm_credential_evaluation(scan_results)
 
-        response = await self.llm.think(prompt)
-        return response
+        # 8. LLM决策3：异常处理
+        final_credentials = await self._llm_exception_handling(validated_credentials)
 
-    async def on_credential_found(self, event: CredentialFoundEvent):
-        """处理凭证发现事件"""
-        self.credentials.append(event.credential)
-        self.logger.info("Credential found", total=len(self.credentials))
+        # 9. 框架：保存结果
+        await self._save_results(final_credentials)
 
-    async def on_task_completed(self, event: TaskCompletedEvent):
-        """处理任务完成事件"""
-        self.logger.info("Task completed", status=event.status)
+        # 10. 发布完成事件
+        await self._publish_completion()
 ```
 
-#### 5.5 执行 Agent
-
-**文件**: `imagescan/agents/executor_agent.py`
+**System Prompt模板**：
 
 ```python
-from ..core.agent import Agent
-from ..core.events import *
-from ..tools.registry import registry
-from ..core.filename_analyzer import FilenameAnalyzer
-from ..core.content_scanner import ContentScanner
-from ..utils.logger import get_logger
+# 文件筛选System Prompt
+FILENAME_SYSTEM_PROMPT = """
+你是Docker镜像文件安全分析专家。
 
-logger = get_logger(__name__)
+你可以使用以下工具：
+- file.extract_from_layer(layer_path, file_path, output_path)
+- file.read_content(file_path)
 
-class ExecutorAgent(Agent):
-    def __init__(
-        self,
-        event_bus: EventBus,
-        filename_analyzer: FilenameAnalyzer,
-        content_scanner: ContentScanner
-    ):
-        super().__init__(event_bus, "executor")
-        self.filename_analyzer = filename_analyzer
-        self.content_scanner = content_scanner
+决策标准：
+- .env, .config, config.json: 高优先级
+- *.pem, *.key, *.cert: 高优先级
+- __pycache__, node_modules: 低优先级
 
-    async def run(self):
-        """运行执行 Agent"""
-        self.logger.info("Executor agent started")
+输出格式：函数调用字符串
+file.extract_from_layer("layer_tar", "/app/config.json", "./output")
+"""
 
-        # 订阅事件
-        self.event_bus.subscribe("layer.extracted", self.on_layer_extracted)
-        self.event_bus.subscribe("filename.analyzed", self.on_filename_analyzed)
+# 内容扫描System Prompt
+CONTENT_SYSTEM_PROMPT = """
+你是凭证检测专家。
 
-    async def on_layer_extracted(self, event: LayerExtractedEvent):
-        """处理层提取完成事件"""
-        for layer in event.layers:
-            # 1. 列出文件
-            files = await registry.get("file.list_layer_files")(layer["tar_path"])
+检测目标：
+1. API Keys (AWS, Google, GitHub)
+2. 密码
+3. Tokens (JWT, OAuth)
+4. 证书/私钥
 
-            # 2. LLM 分析文件名
-            classification = await self.filename_analyzer.analyze(files)
+返回JSON：
+{"credentials": [{"type": "api_key", "value": "...", "confidence": 0.95}]}
+"""
 
-            # 3. 发布分析完成事件
-            await self.event_bus.publish(FilenameAnalyzedEvent(
-                task_id=event.task_id,
-                layer_id=layer["layer_id"],
-                classification=classification
-            ))
+# 凭证评估System Prompt
+EVALUATION_SYSTEM_PROMPT = """
+你是安全评估专家。
 
-    async def on_filename_analyzed(self, event: FilenameAnalyzedEvent):
-        """处理文件名分析完成事件"""
-        high_risk = event.classification.get("high_risk", [])
+评估标准：
+- 格式正确
+- 熵值足够
+- 上下文支持
+- 非测试数据
 
-        for file_path in high_risk:
-            # 1. 提取文件
-            extracted = await registry.get("file.extract_from_layer")(
-                event.layer_id, file_path, "./files"
-            )
-
-            # 2. 读取内容
-            content = await registry.get("file.read_content")(extracted)
-
-            # 3. 扫描凭证
-            credentials = await self.content_scanner.scan(file_path, content)
-
-            # 4. 发布凭证发现事件
-            for cred in credentials:
-                await self.event_bus.publish(CredentialFoundEvent(
-                    task_id=event.task_id,
-                    credential=cred
-                ))
+返回JSON：
+{"validated_credentials": [{"credential_id": "...", "is_valid": true}]}
+"""
 ```
 
-### 验收标准
-
-- [ ] 事件总线可发布和订阅事件
-- [ ] 主 Agent 可制定计划并分发任务
-- [ ] 执行 Agent 可处理层和文件
-- [ ] Agent 间通过事件正确通信
+**验收标准**：
+- [ ] ScanAgent执行完整流程
+- [ ] 3个LLM决策点正常工作
+- [ ] 工具调用正常
+- [ ] 事件正确发布
+- [ ] 结果正确保存
 
 ---
 
-## 阶段 6: CLI 界面层
+## 阶段 4: 集成与测试
 
-### 目标
-实现命令行界面
+**目标**：集成所有组件，端到端测试
+
 
 ### 步骤
 
-#### 6.1 CLI 入口
+#### 4.1 CLI集成
 
 **文件**: `imagescan/cli/main.py`
 
 ```python
-import typer
-from rich.console import Console
-from rich.progress import Progress, BarColumn, TextColumn
-
-app = typer.Typer()
-console = Console()
-
 @app.command()
-def scan(
-    image_name: str = typer.Argument(..., help="Docker image name (e.g., nginx:latest)")
-):
-    """扫描 Docker 镜像中的敏感凭证"""
-    from ..agents.master_agent import MasterAgent
-    from ..core.event_bus import EventBus
-    from ..utils.config import Config
-    from ..utils.database import Database
-    from ..utils.logger import setup_logging, get_logger
+def scan(image_name: str = typer.Argument(...)):
+    """扫描 Docker 镜像"""
 
     # 加载配置
     config = Config.load()
-    setup_logging(
-        level=config.system.log_level,
-        log_format=config.system.log_format
-    )
-    logger = get_logger(__name__)
 
-    # 初始化数据库
+    # 初始化组件
+    event_bus = EventBus()
     db = Database(config.storage.database_path)
     await db.init()
 
+    tool_registry = registry
+    rule_engine = RuleEngine(config)
+    summary_manager = SummaryManager(config.llm.summary_token_threshold)
+    content_scanner = ContentScanner()
+    llm_client = LLMClient(config)
+
     # 创建任务
-    task = ScanTask(image_name=image_name, image_id="...")
+    task = ScanTask(image_name=image_name, image_id="")
     task_id = await db.insert_task(task)
 
-    console.print(f"✅ Task created: {task_id}")
+    # 创建ScanAgent
+    scan_agent = ScanAgent(
+        event_bus=event_bus,
+        llm_client=llm_client,
+        tool_registry=tool_registry,
+        rule_engine=rule_engine,
+        summary_manager=summary_manager,
+        content_scanner=content_scanner,
+        task_id=task_id,
+        image_name=image_name,
+        config=config
+    )
 
-    # 启动 Agent 系统
-    event_bus = EventBus()
+    # 订阅进度事件
+    event_bus.subscribe("task.started", lambda e: console.print("🚀 Started"))
+    event_bus.subscribe("layer.completed", lambda e: console.print(f"✅ Layer: {e.layer_id}"))
+    event_bus.subscribe("credential.found", lambda e: console.print(f"🔑 Found: {e.credential.get('type')}"))
+    event_bus.subscribe("task.completed", lambda e: console.print(f"✅ Done! Found {e.credentials_count} credentials"))
 
-    # 启动进度显示
-    with Progress(
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TextColumn("Files: {task.fields[files]}"),
-        TextColumn("Credentials: {task.fields[creds]}")
-    ) as progress:
-
-        task_progress = progress.add_task(
-            "Scanning...",
-            total=100,
-            files=0,
-            creds=0
-        )
-
-        # 订阅进度
-        async def on_progress(event):
-            progress.update(
-                task_progress,
-                completed=event.processed_files / event.total_files * 100,
-                files=f"{event.processed_files}/{event.total_files}",
-                creds=event.credentials_found
-            )
-
-        event_bus.subscribe("progress.update", on_progress)
-
-        # 启动主 Agent
-        master = MasterAgent(event_bus, llm_client, task_id, image_name)
-        await master.run()
-
-    console.print("✅ Scan completed!")
-
-@app.command()
-def history():
-    """查看扫描历史"""
-    console.print("History command")
-
-@app.command()
-def config():
-    """查看/修改配置"""
-    console.print("Config command")
-
-@app.command()
-def verify(credential_id: str):
-    """验证凭证"""
-    console.print(f"Verify: {credential_id}")
-
-if __name__ == "__main__":
-    app()
+    # 运行
+    await scan_agent.run()
 ```
 
-#### 6.2 命令注册
+#### 4.2 事件系统优化
 
-**文件**: `setup.py`
+**文件**: `imagescan/core/event_bus.py`
 
 ```python
-from setuptools import setup
+class EventBus:
+    def __init__(self, max_history=500):  # 默认500
+        self.queue = asyncio.Queue()
+        self.subscribers = {}
+        self.max_history = max_history
+        self.history = []
 
-setup(
-    name="imagescan-agent",
-    version="1.0.0",
-    packages=["imagescan"],
-    install_requires=[
-        "fastapi==0.104.1",
-        "uvicorn==0.24.0",
-        "typer==0.9.0",
-        "rich==13.7.0",
-        # ... 其他依赖
-    ],
-    entry_points={
-        "console_scripts": [
-            "imagescan=imagescan.cli.main:app"
-        ]
-    }
-)
+    async def publish(self, event: BaseModel):
+        """发布事件"""
+        await self.queue.put(event)
+
+        # 记录历史（非DEBUG事件）
+        if not event.event_type.startswith("debug"):
+            self.history.append(event)
+            if len(self.history) > self.max_history:
+                self.history.pop(0)
 ```
 
-### 验收标准
+#### 4.3 端到端测试
 
-- [ ] `imagescan scan nginx:latest` 可执行
-- [ ] 进度条正确显示
-- [ ] 命令可正常退出
+**测试镜像**: `20.205.173.138:5000/ql_csdl_giao_thong/ql_csdl_giao_thong_be:a69a2e00`
 
----
+**验收**：
+- [ ] 扫描成功完成
+- [ ] 发现至少1个凭证
+- [ ] 置信度>0.5
+- [ ] 性能<5分钟/GB
 
-## 阶段 7-10: 后续阶段
+#### 4.4 文档更新
 
-（由于篇幅限制，后续阶段简要列出）
-
-### 阶段 7: API 服务层
-- FastAPI 端点实现
-- WebSocket 实时通信
-- API 文档生成
-
-### 阶段 8: Web UI 层
-- Next.js 项目初始化
-- 页面组件开发
-- API 集成
-
-### 阶段 9: 测试与优化
-- 单元测试 (pytest)
-- 集成测试
-- 性能优化
-
-### 阶段 10: 部署与文档
-- Docker 镜像构建
-- Docker Compose 配置
-- 用户文档编写
+更新以下文档：
+- `CLAUDE.md` - 项目指南
+- `docs/AGENT_ENHANCEMENT_PLAN.md` - 标记已完成
+- `progress.txt` - 更新进度
 
 ---
 
-## 总结
+## 验收标准总结
 
-本实施计划详细描述了从环境准备到最终部署的完整构建序列。**每个阶段都有明确的步骤和验收标准**，确保开发过程可追踪、可验证。
+### 阶段 1 验收
 
-**关键里程碑**:
-- 阶段 0-2: 基础设施和工具 ✅
-- 阶段 3-5: 数据层、LLM、Agent 核心 ✅
-- 阶段 6: MVP CLI 完成 ✅
-- 阶段 7-10: 完整系统和部署
+- [ ] 规则引擎正确过滤文件
+- [ ] config.toml包含新配置
+- [ ] filename_analyzer不调用LLM
+
+### 阶段 2 验收
+
+- [ ] LLM解析器解析函数调用
+- [ ] 摘要管理器生成摘要
+- [ ] content_scanner不调用LLM
+
+### 阶段 3 验收
+
+- [ ] ScanAgent执行完整流程
+- [ ] LLM决策点工作正常
+- [ ] 工具调用正常
+
+### 阶段 4 验收
+
+- [ ] CLI命令正常
+- [ ] 端到端测试通过
+- [ ] 性能达标
+- [ ] 文档已更新
 
 ---
 
-**文档结束**
+## 附录
+
+### 文件变更清单
+
+**新建**：
+- `imagescan/utils/rules.py`
+- `imagescan/core/llm_parser.py`
+- `imagescan/utils/summary.py`
+- `imagescan/agents/scan_agent.py`
+
+**删除**：
+- `imagescan/agents/master_agent.py`
+- `imagescan/agents/executor_agent.py`
+- `imagescan/agents/validation_agent.py`
+- `imagescan/agents/reflection_agent.py`
+- `imagescan/agents/knowledge_agent.py`
+- `tests/unit/test_*_agent.py`
+
+**重构**：
+- `imagescan/core/filename_analyzer.py`
+- `imagescan/core/content_scanner.py`
+- `imagescan/core/event_bus.py`
+- `config.toml`
+- `imagescan/cli/main.py`
+
+**保留**：
+- `imagescan/tools/`
+- `imagescan/models/`
+- `imagescan/utils/database.py`
+- `imagescan/utils/config.py`
+- `imagescan/utils/logger.py`
+- `imagescan/core/events.py`
+- `imagescan/core/llm_client.py`
+
+
+**文档版本**: 2.0.0
+**最后更新**: 2025-03-02
+**作者**: Claude (基于用户29轮问答的决策)

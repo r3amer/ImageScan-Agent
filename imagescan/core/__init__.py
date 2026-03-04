@@ -3,7 +3,7 @@
 
 导出所有核心组件：
 - LLMClient: LLM 客户端
-- FilenameAnalyzer: 文件名分析器
+- FilenameFilter: 文件名过滤器
 - ContentScanner: 内容扫描器
 - Event, EventType: 事件系统
 - EventBus: 事件总线
@@ -11,16 +11,9 @@
 """
 
 from .llm_client import LLMClient, LLMClientError, get_llm_client
-from .filename_analyzer import (
-    FilenameAnalyzer,
-    FilenameAnalysisResult,
-    get_filename_analyzer
-)
-from .content_scanner import (
-    ContentScanner,
-    FileScanResult,
-    get_content_scanner
-)
+from .filename_filter import FilenameFilter, FilenameFilterResult
+from .content_scanner import ContentScanner, FileContent
+from .llm_parser import LLMFunctionCallParser, ParseError
 from .events import (
     Event,
     EventType,
@@ -36,6 +29,7 @@ from .events import (
 )
 from .event_bus import EventBus, get_event_bus
 from .agent import Agent, BaseAgent, AgentState
+from .orchestrator import ScanOrchestrator
 
 __all__ = [
     # LLM Client
@@ -43,15 +37,17 @@ __all__ = [
     "LLMClientError",
     "get_llm_client",
 
-    # Filename Analyzer
-    "FilenameAnalyzer",
-    "FilenameAnalysisResult",
-    "get_filename_analyzer",
+    # Filename Filter
+    "FilenameFilter",
+    "FilenameFilterResult",
 
     # Content Scanner
     "ContentScanner",
-    "FileScanResult",
-    "get_content_scanner",
+    "FileContent",
+
+    # LLM Parser
+    "LLMFunctionCallParser",
+    "ParseError",
 
     # Events
     "Event",
@@ -74,4 +70,7 @@ __all__ = [
     "Agent",
     "BaseAgent",
     "AgentState",
+
+    # Orchestrator
+    "ScanOrchestrator",
 ]

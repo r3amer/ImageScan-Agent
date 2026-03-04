@@ -23,26 +23,29 @@ class ToolRegistry:
     def __init__(self):
         """初始化空的工具注册表"""
         self._tools: Dict[str, Callable] = {}
+        self._descriptions: Dict[str, str] = {}
 
-    def register(self, name: Optional[str] = None):
+    def register(self, name: Optional[str] = None, description: Optional[str] = None):
         """
         装饰器：注册工具函数
 
         Args:
             name: 工具名称（默认使用函数名）
+            description: 工具描述（包括用途、参数说明、返回值说明）
 
         Returns:
             装饰器函数
 
         示例:
             >>> registry = ToolRegistry()
-            >>> @registry.register("docker.save")
+            >>> @registry.register("docker.save", description="保存镜像为tar文件")
             >>> def docker_save(image_name: str, output_path: str) -> str:
             ...     return f"Saved {image_name}"
         """
         def decorator(func: Callable) -> Callable:
             tool_name = name or func.__name__
             self._tools[tool_name] = func
+            self._descriptions[tool_name] = description or func.__doc__ or "No description"
             return func
         return decorator
 
@@ -75,17 +78,18 @@ class ToolRegistry:
         """
         return name in self._tools
 
-    def list_tools(self) -> Dict[str, str]:
+    def list_tools(self) -> str:
         """
-        列出所有工具及其描述
+        列出所有工具及其描述（用于拼接到提示词）
 
         Returns:
-            工具名称到描述的映射
+            格式化的工具列表字符串
         """
-        return {
-            name: func.__doc__ or "No description"
-            for name, func in self._tools.items()
-        }
+        lines = []
+        for name in sorted(self._tools.keys()):
+            desc = self._descriptions.get(name, "No description")
+            lines.append(f"- {name}: {desc}")
+        return "\n".join(lines)
 
     def get_schema(self, name: str) -> Dict[str, Any]:
         """

@@ -279,6 +279,89 @@ open http://localhost:3000
 - 内存占用: < 2GB（中等规模镜像）
 - 异步处理：asyncio
 
+### 工具返回值标准化架构（2025-03 更新）
+
+**核心原则**: 所有工具必须返回统一的 `{success, data, summary}` 格式，消除 Agent 层的硬编码逻辑。
+
+#### 标准返回格式
+
+```python
+# 成功情况
+return {
+    "success": True,
+    "data": {...},           # 实际数据
+    "summary": "✅ 操作成功"  # 或 ["行1", "行2"] 用于多行输出
+}
+
+# 失败情况
+return {
+    "success": False,
+    "error": "错误原因",
+    "summary": "❌ 操作失败：错误原因"
+}
+```
+
+#### 架构优势
+
+1. **零硬编码**: Agent 使用通用的 `_format_tool_result()` 方法，自动提取 `summary` 字段
+2. **上下文隔离**: 工具层负责所有业务逻辑和 LLM 调用，Agent 只负责编排
+3. **易于扩展**: 新工具只需返回 `summary` 字段，无需修改 Agent 代码
+4. **Token 优化**: 主对话只保留摘要，详细数据存储在 Storage 中
+
+#### 实现细节
+
+**工具层 (tools/*.py)**:
+- 每个工具包含完整的业务逻辑
+- 调用 `llm_client.think()` 进行独立 LLM 分析
+- 返回结构化结果，包含 `summary` 字段
+
+**Agent 层 (agents/scan_agent.py)**:
+- 通用 `_format_tool_result()` 方法处理所有工具结果
+- 不再有任何硬编码的 if-elif 工具处理逻辑
+- 特殊工具（如 `file.analyze_contents`）将数据存储到 Storage
+
+**LLM 客户端层 (core/llm_client.py)**:
+- 只提供通用的 `think(prompt, context, temperature)` 方法
+- 不包含任何业务逻辑
+
+#### 已实现的标准工具
+
+| 工具 | 功能 | 返回值 |
+|------|------|--------|
+| `docker.save` | 保存镜像为 tar | `{success, data: {tar_path, size_mb}, summary}` |
+| `docker.exists` | 检查镜像是否存在 | `{success, data: {exists}, summary}` |
+| `tar.unpack` | 解压镜像 tar | `{success, data: {manifest, layers_count}, summary}` |
+| `tar.analyze_all_layer_files` | 分析文件名（隔离） | `{success, data: {suspicious_files, ...}, summary: [...]}` |
+| `file.analyze_contents` | 分析文件内容（隔离） | `{success, data: {credentials}, summary: [...]}` |
+
+#### 新工具开发规范
+
+创建新工具时，必须：
+
+1. 返回标准格式 `{success, data, summary}`
+2. 在 `summary` 字段中提供人类可读的结果摘要
+3. 多行输出使用列表格式 `["行1", "行2"]`
+4. 错误情况包含 `error` 字段和 `summary` 字段
+
+```python
+@registry.register("tool.name", description="...")
+async def my_tool(param: str) -> Dict[str, Any]:
+    try:
+        # 业务逻辑
+        result = await do_something(param)
+        return {
+            "success": True,
+            "data": result,
+            "summary": f"✅ 操作完成：{param}"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "summary": f"❌ 操作失败：{e}"
+        }
+```
+
 ---
 
 ## 📊 数据流

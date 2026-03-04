@@ -24,12 +24,7 @@ from rich import print as rprint
 
 from ..utils.logger import get_logger
 from ..utils.config import get_config
-from ..agents.master_agent import MasterAgent
-from ..agents.executor_agent import ExecutorAgent
-from ..agents.validation_agent import ValidationAgent
-from ..agents.knowledge_agent import KnowledgeAgent
-from ..agents.reflection_agent import ReflectionAgent
-from ..utils.database import get_database
+from ..core.orchestrator import ScanOrchestrator
 
 logger = get_logger(__name__)
 console = Console()
@@ -44,22 +39,6 @@ app = typer.Typer(
 
 
 # ========== 辅助函数 ==========
-
-def init_agents():
-    """初始化所有 Agent"""
-    event_bus = None  # 使用全局实例
-    database = get_database()
-
-    master = MasterAgent(event_bus=event_bus, database=database)
-    executor = ExecutorAgent(event_bus=event_bus, database=database)
-    validator = ValidationAgent(event_bus=event_bus, database=database)
-    knowledge = KnowledgeAgent(event_bus=event_bus)
-    reflection = ReflectionAgent(event_bus=event_bus, database=database)
-
-    # 设置从 Agent
-    master.set_agents(executor, validator, knowledge, reflection)
-
-    return master, executor, validator, knowledge, reflection
 
 
 # ========== version 命令 ==========
@@ -110,194 +89,84 @@ def scan(
             else:
                 set_log_level("INFO")
 
-            # 初始化 Agent
-            console.print("[cyan]初始化 Agent...[/cyan]")
-            master, executor, validator, knowledge, reflection = init_agents()
+            # 加载配置
+            config = get_config()
 
-            # 初始化所有 Agent
-            await master.initialize()
-            await executor.initialize()
-            await validator.initialize()
-            await knowledge.initialize()
-            await reflection.initialize()
+            # 获取事件总线
+            from ..core.event_bus import get_event_bus
+            event_bus = get_event_bus()
 
-            console.print("[green]✓[/green] Agent 初始化完成\n")
+            # 创建扫描编排器
+            console.print("[cyan]初始化扫描器...[/cyan]")
+            orchestrator = ScanOrchestrator(
+                event_bus=event_bus,
+                config=config
+            )
 
-            # 创建进度条
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                console=console
-            ) as progress:
+            console.print("[green]✓[/green] 扫描器初始化完成\n")
 
-                # 添加任务
-                task = progress.add_task(
-                    f"[cyan]扫描镜像 {image}[/cyan]",
-                    total=100
-                )
+            # 执行扫描
+            console.print(f"[cyan]开始扫描镜像 {image}[/cyan]\n")
 
-                # 订阅进度事件
-                from ..core.event_bus import get_event_bus
-                from ..core.events import EventType
-
-                event_bus = get_event_bus()
-
-                # 进度更新回调
-                async def update_progress():
-                    while True:
-                        await asyncio.sleep(0.1)
-                        stats = master.get_scan_progress()
-                        if stats["task_id"]:
-                            total_layers = stats["stats"].get("total_layers", 1)
-                            current_layer = stats["stats"].get("processed_layers", 0)
-                            percent = int((current_layer / total_layers) * 100) if total_layers > 0 else 0
-                            progress.update(task, completed=percent)
-                            if percent >= 100:
-                                break
-
-                # 启动进度更新任务
-                progress_task = asyncio.create_task(update_progress())
-
-                # 执行实际扫描
-                try:
-                    result = await master.process(
-                        image_name=image,
-                        image_id=image  # 使用镜像名称作为 ID
-                    )
-                finally:
-                    progress_task.cancel()
+            result = await orchestrator.scan_image(
+                image_name=image,
+                output_file=output
+            )
 
             # 显示结果
             console.print("\n[green]✓[/green] 扫描完成！")
             console.print(f"  镜像: {image}")
+            console.print(f"  任务 ID: {result.get('task_id', 'N/A')}")
+            console.print(f"  发现凭证: [yellow]{result.get('credential_count', 0)}[/yellow] 个")
+            console.print(f"  风险等级: ", nl=False)
 
-            # 获取扫描结果
-            task_id = result.get("task_id")
-            if task_id:
-                db_task = await master.database.get_task(task_id)
+            # 风险等级颜色
+            risk_level = result.get("risk_level", "LOW")
+            if risk_level == "HIGH":
+                console.print("[red]HIGH[/red]")
+            elif risk_level == "MEDIUM":
+                console.print("[yellow]MEDIUM[/yellow]")
+            else:
+                console.print("[green]LOW[/green]")
 
-                if db_task:
-                    credentials_found = db_task.get("credentials_found", 0)
-                    console.print(f"  任务 ID: {task_id}")
-                    console.print(f"  发现凭证: [yellow]{credentials_found}[/yellow] 个")
+            # 显示凭证类型分布
+            if verbose:
+                credentials = result.get("credentials", [])
+                if credentials:
+                    from collections import Counter
+                    cred_types = Counter(cred.get("type", "UNKNOWN") for cred in credentials)
 
-                    # 获取凭证列表
-                    credentials = await master.database.get_credentials_by_task(task_id)
+                    console.print("\n  [bold]凭证类型分布:[/bold]")
+                    for cred_type, count in cred_types.most_common():
+                        console.print(f"    {cred_type}: {count}")
 
-                    if credentials:
-                        # 显示统计信息
-                        from collections import Counter
-                        cred_types = Counter(cred.get("cred_type", "UNKNOWN") for cred in credentials)
-                        high_conf = sum(1 for cred in credentials if cred.get("confidence", 0) >= 0.8)
+                    console.print("\n  [bold]发现的凭证:[/bold]")
+                    for cred in credentials[:10]:  # 最多显示10个
+                        cred_type = cred.get("type", "UNKNOWN")
+                        conf = cred.get("confidence", 0.0)
+                        file_path = cred.get("file_path", "")
 
-                        console.print(f"  高置信度: [red]{high_conf}[/red] 个")
-
-                        # 显示凭证类型分布
-                        if verbose:
-                            console.print("\n  [bold]凭证类型分布:[/bold]")
-                            for cred_type, count in cred_types.most_common():
-                                console.print(f"    {cred_type}: {count}")
-
-                        # 风险等级评估
-                        if high_conf >= 10:
-                            risk_level = "[red]HIGH[/red]"
-                        elif high_conf >= 3:
-                            risk_level = "[yellow]MEDIUM[/yellow]"
+                        # 置信度样式
+                        if conf >= 0.8:
+                            conf_style = f"[red]{conf:.2f}[/red]"
+                        elif conf >= 0.5:
+                            conf_style = f"[yellow]{conf:.2f}[/yellow]"
                         else:
-                            risk_level = "[green]LOW[/green]"
-                        console.print(f"  风险等级: {risk_level}")
+                            conf_style = f"{conf:.2f}"
 
-                        # 详细输出
-                        if verbose and credentials:
-                            console.print("\n[bold]发现的凭证:[/bold]")
-                            for cred in credentials[:10]:  # 最多显示10个
-                                cred_type = cred.get("cred_type", "UNKNOWN")
-                                conf = cred.get("confidence", 0.0)
-                                file_path = cred.get("file_path", "")
+                        console.print(f"  • {cred_type} ({conf_style})")
+                        console.print(f"    文件: {file_path}")
 
-                                # 置信度样式
-                                if conf >= 0.8:
-                                    conf_style = f"[red]{conf:.2f}[/red]"
-                                elif conf >= 0.5:
-                                    conf_style = f"[yellow]{conf:.2f}[/yellow]"
-                                else:
-                                    conf_style = f"{conf:.2f}"
+                    if len(credentials) > 10:
+                        console.print(f"\n  ... 还有 {len(credentials) - 10} 个凭证")
 
-                                console.print(f"  • {cred_type} ({conf_style})")
-                                console.print(f"    文件: {file_path}")
-
-                            if len(credentials) > 10:
-                                console.print(f"\n  ... 还有 {len(credentials) - 10} 个凭证")
-
-                    # 保存结果到 JSON
-                    if output:
-                        import json
-                        from pathlib import Path
-
-                        # 收集 token 使用统计（从全局 llm_client 获取）
-                        token_usage = {
-                            "total_tokens": 0,
-                            "prompt_tokens": 0,
-                            "completion_tokens": 0,
-                            "call_count": 0
-                        }
-
-                        # 从任意一个 llm_client 获取统计（都是全局单例）
-                        if hasattr(executor, 'filename_analyzer') and hasattr(executor.filename_analyzer, 'llm_client'):
-                            token_usage = executor.filename_analyzer.llm_client.get_token_usage()
-                        elif hasattr(executor, 'content_scanner') and hasattr(executor.content_scanner, 'llm_client'):
-                            token_usage = executor.content_scanner.llm_client.get_token_usage()
-
-                        result_data = {
-                            "task_id": task_id,
-                            "image": image,
-                            "image_id": db_task.get("image_id", ""),
-                            "status": db_task.get("status", ""),
-                            "credentials_found": credentials_found,
-                            "risk_level": "HIGH" if high_conf >= 10 else "MEDIUM" if high_conf >= 3 else "LOW",
-                            "token_usage": token_usage,
-                            "statistics": {
-                                "total_layers": db_task.get("total_layers", 0),
-                                "processed_layers": db_task.get("processed_layers", 0),
-                                "total_files": db_task.get("total_files", 0),
-                                "high_confidence": high_conf
-                            },
-                            "credentials": [
-                                {
-                                    "type": cred.get("cred_type"),
-                                    "confidence": cred.get("confidence"),
-                                    "file_path": cred.get("file_path"),
-                                    "layer_id": cred.get("layer_id"),
-                                    "line_number": cred.get("line_number"),
-                                    "validation_status": cred.get("validation_status")
-                                }
-                                for cred in credentials
-                            ],
-                            "created_at": db_task.get("created_at", ""),
-                            "started_at": db_task.get("started_at", ""),
-                            "completed_at": db_task.get("completed_at", "")
-                        }
-
-                        output_path = Path(output)
-                        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-                        with open(output_path, 'w', encoding='utf-8') as f:
-                            json.dump(result_data, f, indent=2, ensure_ascii=False)
-
-                        console.print(f"\n[cyan]✓[/cyan] 结果已保存到: [cyan]{output_path}[/cyan]")
-
-            # 清理
-            await master.stop()
-            await executor.stop()
-            await validator.stop()
-            await knowledge.stop()
-            await reflection.stop()
+            # 保存结果提示
+            if output:
+                console.print(f"\n[cyan]✓[/cyan] 结果已保存到: [cyan]{output}[/cyan]")
 
         except Exception as e:
             console.print(f"\n[red]✗[/red] 扫描失败: {e}")
-            if verbose:
+            if debug:
                 import traceback
                 console.print(traceback.format_exc())
             raise typer.Exit(1)
