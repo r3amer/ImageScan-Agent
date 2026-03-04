@@ -114,7 +114,7 @@ API_KEY, PASSWORD, TOKEN, CERTIFICATE, PRIVATE_KEY, DATABASE_URL, AWS_KEY, SSH_K
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((asyncio.TimeoutError, ConnectionError))
+        retry=retry_if_exception_type((ConnectionError,))  # 移除 asyncio.TimeoutError
     )
     async def _call_llm(
         self,
@@ -135,6 +135,7 @@ API_KEY, PASSWORD, TOKEN, CERTIFICATE, PRIVATE_KEY, DATABASE_URL, AWS_KEY, SSH_K
 
         Raises:
             LLMClientError: 调用失败
+            asyncio.TimeoutError: 超时（传播到上层处理）
         """
         try:
             logger.debug(
@@ -185,8 +186,9 @@ API_KEY, PASSWORD, TOKEN, CERTIFICATE, PRIVATE_KEY, DATABASE_URL, AWS_KEY, SSH_K
             return result
 
         except asyncio.TimeoutError:
-            logger.error("LLM 请求超时")
-            raise LLMClientError("LLM 请求超时")
+            # 超时异常传播到上层，不在这里处理
+            logger.error("LLM 请求超时", message_length=len(json.dumps(messages)))
+            raise  # 重新抛出超时异常，让上层处理分段逻辑
 
         except json.JSONDecodeError as e:
             logger.error("LLM 响应 JSON 解析失败", error=str(e))
@@ -296,99 +298,6 @@ API_KEY, PASSWORD, TOKEN, CERTIFICATE, PRIVATE_KEY, DATABASE_URL, AWS_KEY, SSH_K
         )
 
         return result
-
-    async def analyze_file_contents(
-        self,
-        file_path: str,
-        content: str,
-        layer_id: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        分析文件内容，检测敏感凭证
-
-        Args:
-            file_path: 文件路径
-            content: 文件内容
-            layer_id: 层 ID（可选）
-
-        Returns:
-            检测到的凭证列表：
-            [
-                {
-                    "cred_type": "API_KEY",
-                    "confidence": 0.95,
-                    "context": "原始内容片段（脱敏）",
-                    "line_number": 10,
-                    "metadata": {...}
-                }
-            ]
-        """
-        # 限制内容长度（避免 token 超限）
-        max_length = 10000
-        if len(content) > max_length:
-            content = content[:max_length] + "\n... (内容已截断)"
-            logger.warning(
-                "文件内容过长，进行截断",
-                file_path=file_path,
-                original_length=len(content),
-                truncated=max_length
-            )
-
-        prompt = f"""分析以下文件内容，检测其中的敏感凭证。
-
-文件路径：{file_path}
-
-文件内容：
-```
-{content}
-```
-
-请返回 JSON 格式：
-{{
-    "credentials": [
-        {{
-            "cred_type": "凭证类型（API_KEY/PASSWORD/TOKEN/CERTIFICATE/PRIVATE_KEY/DATABASE_URL/AWS_KEY/SSH_KEY/UNKNOWN）",
-            "confidence": 置信度（0.0-1.0的浮点数）,
-            "context": "包含凭证的上下文（截取关键部分，不超过200字符）",
-            "line_number": 行号（如果可以推断）,
-            "raw_value": "原始凭证值（如果可能提取，否则为null）",
-            "metadata": {{
-                "additional_info": "其他补充信息"
-            }}
-        }}
-    ]
-}}
-
-规则：
-- 只报告真正可能包含敏感凭证的内容
-- 如果没有发现敏感凭证，返回空数组 []
-- 对于已脱敏的内容（如 ***、******），不要报告
-- 对于明显的示例文本（如 your_api_key_here），不要报告
-- 置信度应该基于格式匹配和上下文判断
-- 如果能提取原始凭证值，填写 raw_value（否则为 null）"""
-
-        result = await self.think(prompt, temperature=0.0)
-
-        # 验证返回格式
-        if "credentials" not in result:
-            result["credentials"] = []
-
-        credentials = result["credentials"]
-
-        # 添加文件路径信息
-        for cred in credentials:
-            cred["file_path"] = file_path
-            if "layer_id" not in cred:
-                cred["layer_id"] = layer_id
-
-        logger.info(
-            "文件内容分析完成",
-            file_path=file_path,
-            layer_id=layer_id,
-            credentials_found=len(credentials)
-        )
-
-        return credentials
 
     async def validate_credential(
         self,

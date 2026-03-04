@@ -2,23 +2,11 @@
 Agents 模块
 
 导出所有 Agent：
-- MasterAgent: 主控 Agent
-- ExecutorAgent: 执行 Agent
-- ValidationAgent: 验证 Agent
-- KnowledgeAgent: 知识 Agent
-- ReflectionAgent: 研判 Agent
+- ScanAgent: 扫描智能体（v2.0 单一智能体）
 """
 
-from .master_agent import MasterAgent
-from .executor_agent import ExecutorAgent
-from .validation_agent import ValidationAgent
-from .knowledge_agent import KnowledgeAgent
-from .reflection_agent import ReflectionAgent
+from .scan_agent import ScanAgent
 
 __all__ = [
-    "MasterAgent",
-    "ExecutorAgent",
-    "ValidationAgent",
-    "KnowledgeAgent",
-    "ReflectionAgent",
+    "ScanAgent",
 ]

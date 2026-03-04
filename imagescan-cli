@@ -300,6 +300,75 @@ async def scan_image(
         return False
 
 
+def show_history(limit: int = 10):
+    """显示历史扫描记录"""
+    from imagescan.utils.database import get_database
+
+    print_header("扫描历史记录")
+
+    async def _show_history():
+        database = get_database()
+        await database.init()
+
+        # 获取所有任务
+        tasks = await database.get_all_tasks()
+
+        if not tasks:
+            print_info("暂无扫描记录")
+            return
+
+        # 按时间倒序排列，取前 N 个
+        tasks = sorted(tasks, key=lambda x: x.get('created_at', ''), reverse=True)[:limit]
+
+        print(f"\n最近 {len(tasks)} 次扫描记录：\n")
+
+        for idx, task in enumerate(tasks, 1):
+            task_id = task.get('task_id', 'UNKNOWN')
+            image_name = task.get('image_name', 'UNKNOWN')
+            status = task.get('status', 'UNKNOWN')
+            credentials_found = task.get('credentials_found', 0)
+            created_at = task.get('created_at', '').replace('T', ' ')[:19]
+
+            # 状态图标
+            status_icon = {
+                'completed': '✅',
+                'failed': '❌',
+                'in_progress': '🔄',
+                'pending': '⏳'
+            }.get(status, '❓')
+
+            # 风险等级
+            if credentials_found >= 10:
+                risk = '🔴 HIGH'
+            elif credentials_found >= 3:
+                risk = '🟡 MEDIUM'
+            elif credentials_found > 0:
+                risk = '🟢 LOW'
+            else:
+                risk = '✨ NONE'
+
+            print(f"{idx}. {status_icon} {image_name}")
+            print(f"   任务ID: {task_id}")
+            print(f"   时间: {created_at}")
+            print(f"   状态: {status.upper()}")
+            print(f"   发现凭证: {credentials_found} 个 {risk}")
+
+            if credentials_found > 0:
+                # 获取凭证类型分布
+                credentials = await database.get_credentials_by_task(task_id)
+                cred_types = {}
+                for cred in credentials:
+                    cred_type = cred.get('cred_type', 'UNKNOWN')
+                    cred_types[cred_type] = cred_types.get(cred_type, 0) + 1
+
+                if cred_types:
+                    print(f"   类型分布: {', '.join(f'{k}:{v}' for k, v in cred_types.items())}")
+
+            print()
+
+    asyncio.run(_show_history())
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
@@ -311,6 +380,8 @@ def main():
   %(prog)s 20.205.173.138:5000/myimage:tag1 --output results.json
   %(prog)s python:3.11 --verbose
   %(prog)s python:3.11 --debug
+  %(prog)s history
+  %(prog)s history --limit 20
 
 日志级别:
   默认只显示 INFO 和 WARNING 级别日志
@@ -320,7 +391,8 @@ def main():
 
     parser.add_argument(
         "image",
-        help="Docker 镜像名称（如 nginx:latest）"
+        nargs='?',  # 可选参数
+        help="Docker 镜像名称（如 nginx:latest），或使用 'history' 查看历史"
     )
 
     parser.add_argument(
@@ -341,17 +413,29 @@ def main():
         action="store_true"
     )
 
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="历史记录显示数量（默认：10）"
+    )
+
     args = parser.parse_args()
 
-    # 运行扫描
-    result = asyncio.run(scan_image(
-        image_name=args.image,
-        output_file=args.output,
-        verbose=args.verbose,
-        debug=args.debug
-    ))
-
-    sys.exit(0 if result else 1)
+    # 判断是查看历史还是扫描镜像
+    if not args.image or args.image == 'history':
+        # 显示历史记录
+        show_history(limit=args.limit)
+        sys.exit(0)
+    else:
+        # 扫描镜像
+        result = asyncio.run(scan_image(
+            image_name=args.image,
+            output_file=args.output,
+            verbose=args.verbose,
+            debug=args.debug
+        ))
+        sys.exit(0 if result else 1)
 
 
 if __name__ == "__main__":

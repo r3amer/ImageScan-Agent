@@ -11,3 +11,6 @@ output
 data
 logs
 progress*
+resp*
+docs
+agent_memory

@@ -87,11 +87,14 @@ async def _run_docker_command(
         raise DockerCommandError("docker command not found. Please install Docker.")
 
 
-@registry.register("docker.save")
+@registry.register(
+    "docker.save",
+    description="保存 Docker 镜像为 tar 文件。参数：image_name(镜像名称), output_path(输出目录)。返回：包含 success, data, summary 的字典"
+)
 async def docker_save(
     image_name: str,
     output_path: str
-) -> str:
+) -> Dict[str, Any]:
     """
     保存 Docker 镜像为 tar 文件
 
@@ -100,25 +103,30 @@ async def docker_save(
         output_path: 输出目录路径
 
     Returns:
-        tar_file_path: 保存的 tar 文件路径
+        {
+            "success": True,
+            "data": {"tar_path": "...", "size_mb": "..."},
+            "summary": "✅ 镜像已保存：./path/to/file.tar (123.45 MB)"
+        }
 
     Raises:
         DockerImageNotFound: 镜像不存在
         DockerSaveError: 保存失败
 
     示例:
-        >>> tar_path = await docker_save("nginx:latest", "./image_tar")
-        >>> # 返回: "./image_tar/nginx_latest.tar"
+        >>> result = await docker_save("nginx:latest", "./image_tar")
+        >>> print(result["summary"])
     """
     logger.info("保存 Docker 镜像", image=image_name, output=output_path)
 
     # 检查镜像是否存在
     if not await docker_exists(image_name):
         logger.error("镜像不存在", image=image_name)
-        raise DockerImageNotFound(
-            f"Docker image '{image_name}' not found locally. "
-            f"Please pull it first: docker pull {image_name}"
-        )
+        return {
+            "success": False,
+            "error": f"镜像 '{image_name}' 不存在，请先拉取：docker pull {image_name}",
+            "summary": f"❌ 镜像不存在，需要先拉取"
+        }
 
     # 确保输出目录存在
     Path(output_path).mkdir(parents=True, exist_ok=True)
@@ -136,23 +144,38 @@ async def docker_save(
 
         # 检查文件是否创建成功
         if not Path(tar_path).exists():
-            raise DockerSaveError(f"tar file not created: {tar_path}")
+            return {
+                "success": False,
+                "error": f"tar 文件未创建：{tar_path}",
+                "summary": f"❌ 镜像保存失败"
+            }
 
         # 获取文件大小
         file_size = Path(tar_path).stat().st_size
-        logger.info("镜像保存成功",
-                    path=tar_path,
-                    size_mb=f"{file_size / 1024 / 1024:.2f}")
+        size_mb = f"{file_size / 1024 / 1024:.2f}"
 
-        return tar_path
+        logger.info("镜像保存成功", path=tar_path, size=size_mb)
+
+        return {
+            "success": True,
+            "data": {"tar_path": tar_path, "size_mb": size_mb},
+            "summary": f"✅ 镜像已保存：{tar_path} ({size_mb} MB)"
+        }
 
     except DockerCommandError as e:
         logger.error("保存镜像失败", error=str(e))
-        raise DockerSaveError(f"Failed to save image: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "summary": f"❌ 镜像保存失败：{str(e)}"
+        }
 
 
-@registry.register("docker.exists")
-async def docker_exists(image_name: str) -> bool:
+@registry.register(
+    "docker.exists",
+    description="检查 Docker 镜像是否存在于本地。参数：image_name(镜像名称)。返回：包含 success, data, summary 的字典"
+)
+async def docker_exists(image_name: str) -> Dict[str, Any]:
     """
     检查 Docker 镜像是否存在
 
@@ -160,23 +183,48 @@ async def docker_exists(image_name: str) -> bool:
         image_name: 镜像名称
 
     Returns:
-        是否存在
+        {
+            "success": True,
+            "data": {"exists": true},
+            "summary": "✅ 镜像存在，可以直接保存"
+        }
 
     示例:
-        >>> if await docker_exists("nginx:latest"):
-        ...     print("镜像存在")
+        >>> result = await docker_exists("nginx:latest")
+        >>> print(result["summary"])
     """
     try:
         process = await _run_docker_command(
             ["inspect", "--type", "image", image_name],
             check=False
         )
-        return process.returncode == 0
+        exists = process.returncode == 0
+
+        if exists:
+            return {
+                "success": True,
+                "data": {"exists": True},
+                "summary": "✅ 镜像存在，可以直接保存"
+            }
+        else:
+            return {
+                "success": True,
+                "data": {"exists": False},
+                "summary": "❌ 镜像不存在，需要先拉取"
+            }
+
     except DockerCommandError:
-        return False
+        return {
+            "success": False,
+            "error": "检查镜像失败",
+            "summary": "❌ 检查镜像失败"
+        }
 
 
-@registry.register("docker.inspect")
+@registry.register(
+    "docker.inspect",
+    description="获取 Docker 镜像的详细信息。参数：image_name(镜像名称)。返回：包含镜像元数据的字典（id、tags、size、layers 等）"
+)
 async def docker_inspect(image_name: str) -> Dict[str, Any]:
     """
     获取 Docker 镜像详细信息
@@ -225,7 +273,10 @@ async def docker_inspect(image_name: str) -> Dict[str, Any]:
         raise DockerCommandError(f"Failed to parse inspect output: {e}")
 
 
-@registry.register("docker.list_images")
+@registry.register(
+    "docker.list_images",
+    description="列出本地所有的 Docker 镜像。参数：无。返回：镜像信息列表，每个镜像包含 id、tags、size 等字段"
+)
 async def docker_list_images() -> List[Dict[str, Any]]:
     """
     列出本地所有 Docker 镜像
@@ -267,7 +318,10 @@ async def docker_list_images() -> List[Dict[str, Any]]:
         raise DockerCommandError(f"Failed to list images: {e}")
 
 
-@registry.register("docker.pull")
+@registry.register(
+    "docker.pull",
+    description="从仓库拉取 Docker 镜像。参数：image_name(镜像名称)。返回：无（成功时无返回值）"
+)
 async def docker_pull(image_name: str) -> None:
     """
     拉取 Docker 镜像
