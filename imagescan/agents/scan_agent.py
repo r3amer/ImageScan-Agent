@@ -19,7 +19,6 @@ from ..core.agent import Agent
 from ..core.events import EventType, Event
 from ..core.llm_client import LLMClient
 from ..tools.registry import ToolRegistry
-from ..utils.rules import RuleEngine
 from ..utils.summary import SummaryManager
 from ..utils.config import Config
 from ..utils.logger import get_logger
@@ -46,7 +45,6 @@ class ScanAgent(Agent):
         event_bus,
         llm_client: LLMClient,
         tool_registry: ToolRegistry,
-        rule_engine: RuleEngine,
         summary_manager: SummaryManager,
         task_id: str,
         image_name: str,
@@ -57,7 +55,6 @@ class ScanAgent(Agent):
 
         self.llm = llm_client
         self.tools = tool_registry
-        self.rule_engine = rule_engine
         self.summary = summary_manager
         self.task_id = task_id
         self.image_name = image_name

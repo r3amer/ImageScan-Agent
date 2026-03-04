@@ -18,7 +18,6 @@ from .event_bus import get_event_bus, EventBus
 from .llm_client import get_llm_client, LLMClient
 from .events import Event, create_task_created
 from ..tools.registry import registry
-from ..utils.rules import RuleEngine, register_rule_engine_tools, set_rule_engine_instance
 from ..utils.summary import SummaryManager
 from ..utils.config import Config
 from ..storage.simple_storage import SimpleStorageManager
@@ -58,7 +57,6 @@ class ScanOrchestrator:
 
         # 依赖（在 scan_image 中初始化）
         self.llm_client: Optional[LLMClient] = None
-        self.rule_engine: Optional[RuleEngine] = None
         self.summary_manager: Optional[SummaryManager] = None
 
     async def scan_image(
@@ -131,13 +129,6 @@ class ScanOrchestrator:
         # LLM 客户端（使用全局单例，不接受参数）
         self.llm_client = get_llm_client()
 
-        # # 规则引擎
-        # self.rule_engine = RuleEngine(self.config)
-
-        # # 设置全局 RuleEngine 实例并注册工具
-        # set_rule_engine_instance(self.rule_engine)
-        # register_rule_engine_tools()
-
         # 摘要管理器
         self.summary_manager = SummaryManager(
             token_threshold=self.config.api.summary_token_threshold,
@@ -161,7 +152,6 @@ class ScanOrchestrator:
             event_bus=self.event_bus,
             llm_client=self.llm_client,
             tool_registry=registry,
-            rule_engine=self.rule_engine,
             summary_manager=self.summary_manager,
             task_id=task_id,
             image_name=image_name,
