@@ -1,0 +1,173 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Import JetBrains Mono for terminal aesthetic */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap');
+
+@layer base {
+  * {
+    @apply border-terminal-light/30;
+  }
+
+  body {
+    @apply bg-terminal-black text-terminal-light font-mono antialiased;
+    font-feature-settings: 'zero' on, 'ss01' on;
+  }
+
+  /* Custom scrollbar - 更高对比度 */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-terminal-dark;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-terminal-muted hover:bg-neon-green cursor-pointer;
+  }
+
+  /* Selection */
+  ::selection {
+    @apply bg-neon-green text-terminal-black;
+  }
+}
+
+@layer components {
+  /* Terminal input styling - 提升边框对比度 */
+  .terminal-input {
+    @apply w-full bg-terminal-dark border-2 border-terminal-muted px-4 py-3 text-neon-green
+           focus:border-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green/50
+           placeholder-terminal-dim transition-all duration-200;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Brutalist button */
+  .terminal-button {
+    @apply px-6 py-3 font-semibold uppercase tracking-wider border-2
+           transition-all duration-200 cursor-pointer;
+    font-family: 'Fira Code', monospace;
+  }
+
+  .terminal-button-primary {
+    @apply terminal-button border-neon-green bg-neon-green/10 text-neon-green
+           hover:bg-neon-green hover:text-terminal-black;
+  }
+
+  .terminal-button-secondary {
+    @apply terminal-button border-terminal-muted text-terminal-light
+           hover:border-neon-green hover:text-neon-green;
+  }
+
+  .terminal-button-danger {
+    @apply terminal-button border-neon-red bg-neon-red/10 text-neon-red
+           hover:bg-neon-red hover:text-terminal-black;
+  }
+
+  /* Data display card - 增强边框对比度 */
+  .data-card {
+    @apply bg-terminal-dark border border-terminal-muted p-4;
+  }
+
+  /* Status indicator */
+  .status-dot {
+    @apply w-2 h-2 rounded-full animate-pulse;
+  }
+
+  .status-running {
+    @apply bg-neon-orange;
+  }
+
+  .status-completed {
+    @apply bg-neon-green;
+  }
+
+  .status-failed {
+    @apply bg-neon-red;
+  }
+
+  /* Monospace label - 大幅提升可读性 */
+  .mono-label {
+    @apply text-xs uppercase tracking-wider text-terminal-muted;
+    font-weight: 600;
+  }
+
+  /* Scanline overlay effect */
+  .scanlines::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 255, 65, 0.03) 2px,
+      rgba(0, 255, 65, 0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  /* Glowing text effect - 增强发光 */
+  .glow-green {
+    text-shadow:
+      0 0 10px rgba(0, 255, 65, 0.7),
+      0 0 20px rgba(0, 255, 65, 0.5),
+      0 0 30px rgba(0, 255, 65, 0.3);
+  }
+
+  /* Progress bar terminal style */
+  .terminal-progress {
+    @apply h-2 bg-terminal-dark border border-terminal-muted overflow-hidden;
+  }
+
+  .terminal-progress-bar {
+    @apply h-full bg-neon-green transition-all duration-300;
+  }
+
+  /* Credential tag - 提升边框和文字对比度 */
+  .credential-tag {
+    @apply inline-block px-2 py-1 text-xs font-mono font-semibold border
+           bg-terminal-black/50;
+  }
+
+  .credential-tag-api {
+    @apply credential-tag border-neon-cyan/50 text-neon-cyan;
+  }
+
+  .credential-tag-password {
+    @apply credential-tag border-neon-orange/50 text-neon-orange;
+  }
+
+  .credential-tag-token {
+    @apply credential-tag border-neon-green/50 text-neon-green;
+  }
+
+  .credential-tag-key {
+    @apply credential-tag border-neon-red/50 text-neon-red;
+  }
+
+  .credential-tag-certificate {
+    @apply credential-tag border-neon-cyan/50 text-neon-cyan;
+  }
+
+  .credential-tag-database {
+    @apply credential-tag border-neon-orange/50 text-neon-orange;
+  }
+
+  .credential-tag-generic {
+    @apply credential-tag border-terminal-muted text-terminal-light;
+  }
+}
+
+/* Utility for monospace numbers */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 辅助类：用于特别暗的文字 */
+.text-dim {
+  @apply text-terminal-dim;
+}

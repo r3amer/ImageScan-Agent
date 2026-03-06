@@ -5,7 +5,7 @@
 1. 自主规划扫描流程
 2. 自己决定调用哪个工具
 3. 根据中间结果动态调整策略
-4. 目标驱动：发现敏感凭证
+4. 目标驱动：发现敏感凭证和危险配置
 
 参考：docs/IMPLEMENTATION_PLAN.md v2.0
 """
@@ -80,6 +80,17 @@ class ScanAgent(Agent):
             # 初始化上下文
             self.context = self._initialize_context()
 
+            # 发布扫描开始事件
+            await self.event_bus.publish(Event(
+                event_type=EventType.TASK_STARTED,
+                source="scan_agent",
+                data={
+                    "task_id": self.task_id,
+                    "image_name": self.image_name,
+                    "max_steps": self.max_steps
+                }
+            ))
+
             # ===== 阶段 1: 准备阶段 - 生成扫描计划 =====
             logger.info("准备阶段：生成扫描计划")
             plan = await self._generate_scan_plan()
@@ -100,6 +111,14 @@ class ScanAgent(Agent):
                     step=step + 1,
                     max_steps=self.max_steps,
                     current_state=self.context.get("current_state")
+                )
+
+                # 发布进度事件
+                percent = (step / self.max_steps) * 100
+                await self._publish_progress(
+                    step + 1,
+                    self.context.get("current_state", "unknown"),
+                    percent=percent
                 )
 
                 # LLM 规划下一步
@@ -124,6 +143,10 @@ class ScanAgent(Agent):
 
             # 完成扫描
             duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+
+            # 发布扫描完成事件
+            await self._publish_scan_complete(duration)
+
             return self._build_result(duration)
 
         except Exception as e:
@@ -137,7 +160,7 @@ class ScanAgent(Agent):
         unique_output_path = f"{self.config.storage.output_path}/{self.task_id}"
 
         return {
-            "goal": f"扫描 Docker 镜像 {self.image_name}，发现所有敏感凭证",
+            "goal": f"扫描 Docker 镜像 {self.image_name}，发现所有敏感凭证和危险配置",
             "current_state": "initialized",
             "image_name": self.image_name,
             "current_step": 0,
@@ -545,7 +568,7 @@ class ScanAgent(Agent):
         return f"""你是 Docker 镜像安全扫描智能体。
 
 ## 目标
-扫描 Docker 镜像，发现所有敏感凭证（API Keys、密码、Tokens、证书等）。
+扫描 Docker 镜像，发现所有敏感凭证（API Keys、密码、Tokens、证书等）和危险配置。
 
 ## 可用工具
 {tools_desc}
@@ -598,7 +621,7 @@ class ScanAgent(Agent):
         return f"""你是 Docker 镜像安全扫描智能体。
 
 ## 目标
-扫描 Docker 镜像，发现所有敏感凭证（API Keys、密码、Tokens、证书等）。
+扫描 Docker 镜像，发现所有敏感凭证（API Keys、密码、Tokens、证书等）和危险配置。
 
 ## 可用工具
 {tools_desc}
@@ -700,10 +723,81 @@ class ScanAgent(Agent):
     async def _publish_error(self, error_message: str):
         """发布错误事件"""
         await self.event_bus.publish(Event(
-            event_type=EventType.ERROR,
+            event_type=EventType.TASK_FAILED,
             source="scan_agent",
             data={
                 "task_id": self.task_id,
+                "image_name": self.image_name,
                 "error": error_message
             }
         ))
+
+    async def _publish_progress(
+        self,
+        step: int,
+        current_state: str,
+        tool_name: Optional[str] = None,
+        percent: float = 0.0
+    ):
+        """发布进度事件"""
+        await self.event_bus.publish(Event(
+            event_type=EventType.TASK_PROGRESS,
+            source="scan_agent",
+            data={
+                "task_id": self.task_id,
+                "step": step,
+                "max_steps": self.max_steps,
+                "current_state": current_state,
+                "tool": tool_name,
+                "percent": percent
+            }
+        ))
+
+    async def _publish_credential_found(
+        self,
+        cred_type: str,
+        confidence: float,
+        file_path: str
+    ):
+        """发布凭证发现事件"""
+        await self.event_bus.publish(Event(
+            event_type=EventType.FILE_CREDENTIAL_FOUND,
+            source="scan_agent",
+            data={
+                "task_id": self.task_id,
+                "cred_type": cred_type,
+                "confidence": confidence,
+                "file_path": file_path
+            }
+        ))
+
+    async def _publish_scan_complete(self, duration: float):
+        """发布扫描完成事件"""
+        credentials = self.storage.get_credentials()
+        stats = self.storage.get_statistics()
+
+        # 转换凭证格式为前端期望的格式
+        credentials_list = []
+        for cred in credentials:
+            credentials_list.append({
+                "type": cred.cred_type,
+                "confidence": cred.confidence,
+                "file_path": cred.file_path,
+                "line_number": getattr(cred, 'line_number', None),
+                "layer_id": getattr(cred, 'layer_id', None),
+                "context": getattr(cred, 'context', None),
+            })
+
+        await self.event_bus.publish(Event(
+            event_type=EventType.TASK_COMPLETED,
+            source="scan_agent",
+            data={
+                "task_id": self.task_id,
+                "image_name": self.image_name,
+                "duration": duration,
+                "credentials_count": len(credentials_list),
+                "credentials": credentials_list,  # 添加完整的凭证列表
+                "statistics": stats.to_dict(),  # 使用 ScanStatistics.to_dict() 方法
+            }
+        ))
+

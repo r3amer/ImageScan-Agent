@@ -3,16 +3,14 @@ FastAPI 后端服务 - 主应用入口
 
 职责：
 1. 初始化 FastAPI 应用
-2. 配置 CORS
-3. 注册路由
-4. 集成 EventBus 到 WebSocket
-5. 提供健康检查
+2. 注册路由
+3. 集成 EventBus 到 WebSocket
+4. 提供健康检查
 
 参考：progress_frontend.txt 第一阶段
 """
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from .routes import chat, scan, events
 from .websocket.manager import manager
@@ -41,7 +39,7 @@ async def lifespan(app: FastAPI):
     event_bus = get_event_bus()
 
     # 订阅所有事件，转发给 WebSocket 客户端
-    event_bus.subscribe("*", _forward_to_websockets)
+    event_bus.subscribe_all("api_websocket", _forward_to_websockets)
     logger.info("已订阅 EventBus，事件将转发到 WebSocket")
 
     yield
@@ -60,45 +58,32 @@ app = FastAPI(
 )
 
 
-def _forward_to_websockets(event):
+async def _forward_to_websockets(event):
     """
     将 EventBus 事件转发给所有 WebSocket 客户端
 
     Args:
         event: EventBus 事件对象
     """
-    import asyncio
     from datetime import timezone
 
-    # 异步转发（避免阻塞 EventBus）
-    async def _forward():
-        await manager.broadcast({
-            "type": event.event_type,
-            "source": event.source,
-            "data": event.data,
-            "timestamp": event.timestamp.astimezone(timezone.utc).isoformat()
-        })
+    # 转发事件到 WebSocket 客户端
+    message = {
+        "type": str(event.event_type),  # EventType is a str Enum, already a string value
+        "source": event.source,
+        "data": event.data,
+        "timestamp": event.timestamp.astimezone(timezone.utc).isoformat()
+    }
 
-    # 在新的事件循环中运行（或使用现有的事件循环）
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_forward())
-    except RuntimeError:
-        # 没有运行中的事件循环，创建一个新的
-        asyncio.run(_forward())
+    # 添加日志来诊断事件转发
+    logger.debug(
+        "转发事件到 WebSocket",
+        event_type=str(event.event_type),
+        source=event.source,
+        connections=manager.get_connection_count()
+    )
 
-
-# 配置 CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Next.js 开发服务器
-        "http://127.0.0.1:3000",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    await manager.broadcast(message)
 
 
 # 注册路由

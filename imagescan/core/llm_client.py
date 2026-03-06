@@ -37,10 +37,10 @@ class LLMClient:
     """
 
     # 系统提示词：容器安全专家（精简版 - 优化性能）
-    SYSTEM_INSTRUCTION = """你是容器安全专家，负责分析 Docker 镜像中的敏感凭证。
+    SYSTEM_INSTRUCTION = """你是容器安全专家，负责分析 Docker 镜像中的敏感凭证和危险配置。
 
 ## 核心任务
-识别文件中的真实敏感凭证（硬编码的密钥、密码、令牌等），忽略配置引用和占位符。
+识别文件中的真实敏感凭证（硬编码的密钥、密码、令牌等）和危险配置，忽略配置引用和占位符。
 
 ## 误报识别规则（严格遵守）
 
@@ -259,7 +259,7 @@ API_KEY, PASSWORD, TOKEN, CERTIFICATE, PRIVATE_KEY, DATABASE_URL, AWS_KEY, SSH_K
             )
             filenames = filenames[:max_files]
 
-        prompt = f"""分析以下 {len(filenames)} 个文件名，识别可能包含敏感凭证的文件。
+        prompt = f"""分析以下 {len(filenames)} 个文件名，识别可能包含敏感凭证和危险配置的文件。
 
 文件名列表：
 {json.dumps(filenames, ensure_ascii=False, indent=2)}

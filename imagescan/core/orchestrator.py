@@ -40,7 +40,8 @@ class ScanOrchestrator:
     def __init__(
         self,
         event_bus: Optional[EventBus] = None,
-        config: Optional[Config] = None
+        config: Optional[Config] = None,
+        task_id = None
     ):
         """
         初始化编排器
@@ -59,6 +60,8 @@ class ScanOrchestrator:
         self.llm_client: Optional[LLMClient] = None
         self.summary_manager: Optional[SummaryManager] = None
 
+        self.task_id = task_id or str(uuid.uuid4())
+
     async def scan_image(
         self,
         image_name: str,
@@ -74,8 +77,7 @@ class ScanOrchestrator:
         Returns:
             扫描结果字典
         """
-        # 生成任务 ID
-        task_id = str(uuid.uuid4())
+        task_id = self.task_id
 
         logger.info("开始扫描", task_id=task_id, image=image_name)
 
@@ -106,13 +108,13 @@ class ScanOrchestrator:
             # 4. 构建结果
             result = await self._build_result(agent_result)
 
-            # 5. 保存到文件（如果指定）
+            # 5. 更新完成时间
+            self.storage.set_metadata("completed_at", datetime.now(timezone.utc).isoformat())
+
+            # 6. 保存到文件（如果指定）
             if output_file:
                 self.storage.save_to_json(output_file)
                 logger.info("结果已保存", path=output_file)
-
-            # 更新完成时间
-            self.storage.set_metadata("completed_at", datetime.now(timezone.utc).isoformat())
 
             logger.info("扫描完成", task_id=task_id, credentials=result["credential_count"])
             return result

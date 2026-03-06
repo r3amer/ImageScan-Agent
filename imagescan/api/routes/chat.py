@@ -10,9 +10,7 @@
 参考：progress_frontend.txt 第一阶段
 """
 
-import asyncio
 import uuid
-import logging
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from ..models.chat import ChatMessage, ChatResponse, Intent
 from ...core.llm_client import get_llm_client
@@ -197,8 +195,12 @@ async def _run_scan_task(task_id: str, image_name: str, session_id: str):
     Args:
         task_id: 任务 ID
         image_name: 镜像名称
-        session_id: 会话 ID
+        session_id: 会话 ID（当前未使用，保留以兼容 API 签名）
     """
+    # session_id 参数保留以兼容 API 签名，但实际不再使用
+    # 所有 WebSocket 事件现在通过 EventBus 广播给所有客户端
+    _ = session_id  # 标记为有意未使用
+
     from ..websocket.manager import manager
 
     logger.info(
@@ -209,23 +211,15 @@ async def _run_scan_task(task_id: str, image_name: str, session_id: str):
 
     try:
         # 创建编排器
-        orchestrator = ScanOrchestrator()
+        orchestrator = ScanOrchestrator(task_id=task_id)
 
         # 执行扫描
-        result = await orchestrator.scan_image(image_name=image_name)
+        result = await orchestrator.scan_image(image_name=image_name, output_file=f"output/{task_id}/result.json")
 
         # 扫描完成，发送 WebSocket 通知
-        await manager.broadcast({
-            "type": "scan_complete",
-            "task_id": task_id,
-            "session_id": session_id,
-            "data": {
-                "image_name": image_name,
-                "status": result.get("status"),
-                "credential_count": result.get("credential_count", 0),
-                "statistics": result.get("statistics", {})
-            }
-        }, session_id=session_id)
+        # 注意：scan_agent 已经通过 EventBus 发送了 task.completed 事件
+        # 这里不再重复发送，避免事件类型不一致的问题
+        # main.py 中的 _forward_to_websockets 会将所有 EventBus 事件转发给所有 WebSocket 客户端
 
         logger.info(
             "后台扫描任务完成",
@@ -236,10 +230,16 @@ async def _run_scan_task(task_id: str, image_name: str, session_id: str):
     except Exception as e:
         logger.error("后台扫描任务失败", task_id=task_id, error=str(e))
 
-        # 发送错误通知
+        # 发送错误通知到所有 WebSocket 客户端（不限制 session）
+        # 注意：scan_agent 应该已经发送了 TASK_FAILED 事件
+        # 这里只发送简单的错误通知作为后备
         await manager.broadcast({
-            "type": "scan_error",
+            "type": "error",
             "task_id": task_id,
-            "session_id": session_id,
-            "error": str(e)
-        }, session_id=session_id)
+            "source": "chat_router",
+            "data": {
+                "error_message": str(e),
+                "error_type": "ScanError",
+                "task_id": task_id
+            }
+        })

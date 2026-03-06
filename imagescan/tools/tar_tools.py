@@ -547,10 +547,8 @@ async def tar_analyze_all_layer_files(extract_path: str) -> Dict[str, Any]:
             "文件名分析完成",
             total_files=len(all_files_flat),
             suspicious=len(suspicious_files),
-            filtered=filtered_count
-        )
-        logger.info(
-            '可疑文件: ', suspicious_files
+            filtered=filtered_count,
+            suspicious_files=suspicious_files
         )
 
         return {
@@ -591,7 +589,7 @@ async def tar_analyze_all_layer_files(extract_path: str) -> Dict[str, Any]:
             )
 
             # 构建分段 prompt（只返回可疑文件）
-            chunk_prompt = f"""分析以下 {len(chunk)} 个文件名，识别可能包含敏感凭证的文件。
+            chunk_prompt = f"""分析以下 {len(chunk)} 个文件名，识别可能包含敏感凭证和危险配置的文件。
 
 文件名列表：
 {json.dumps(chunk, ensure_ascii=False, indent=2)}
