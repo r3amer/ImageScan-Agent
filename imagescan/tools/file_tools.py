@@ -331,10 +331,10 @@ async def file_analyze_contents(
 
 # ========== 工具：过滤路径 ==========
 
-@registry.register(
-    "file.filter_paths",
-    description="过滤文件路径列表。参数：file_paths(文件路径列表), prefix_exclude(排除的路径前缀列表), keywords_exclude(排除的关键词列表)。返回：过滤后的文件路径列表"
-)
+# @registry.register(
+#     "file.filter_paths",
+#     description="过滤文件路径列表。参数：file_paths(文件路径列表), prefix_exclude(排除的路径前缀列表), keywords_exclude(排除的关键词列表)。返回：过滤后的文件路径列表"
+# )
 def file_filter_paths(
     file_paths: List[str],
     prefix_exclude: List[str],

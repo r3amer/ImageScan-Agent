@@ -111,10 +111,17 @@ class ScanOrchestrator:
             # 5. 更新完成时间
             self.storage.set_metadata("completed_at", datetime.now(timezone.utc).isoformat())
 
-            # 6. 保存到文件（如果指定）
-            if output_file:
-                self.storage.save_to_json(output_file)
-                logger.info("结果已保存", path=output_file)
+            # 6. 保存到文件（如果指定或自动生成）
+            if output_file is None:
+                # 自动生成路径：output/{task_id}/result.json
+                import os
+                output_dir = f"output/{task_id}"
+                os.makedirs(output_dir, exist_ok=True)
+                output_file = f"{output_dir}/result.json"
+
+            self.storage.save_to_json(output_file)
+            logger.info("结果已保存", path=output_file)
+            result["output_file"] = output_file  # 将路径添加到结果中
 
             logger.info("扫描完成", task_id=task_id, credentials=result["credential_count"])
             return result
