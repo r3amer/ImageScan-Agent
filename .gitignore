@@ -11,6 +11,7 @@ data
 logs
 progress*
 resp*
+docs*
 docs
 agent_memory
 *.md
