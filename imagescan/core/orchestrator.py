@@ -22,6 +22,8 @@ from ..utils.summary import SummaryManager
 from ..utils.config import Config
 from ..storage.simple_storage import SimpleStorageManager
 from ..utils.logger import get_logger
+from .context import ContextManager
+from ..storage.memory_store import MemoryStore
 
 logger = get_logger(__name__)
 
@@ -55,6 +57,10 @@ class ScanOrchestrator:
 
         # 存储管理器
         self.storage = SimpleStorageManager()
+
+        # 上下文管理组件（延迟初始化）
+        self.context_manager: Optional[ContextManager] = None
+        self.memory_store: Optional[MemoryStore] = None
 
         # 依赖（在 scan_image 中初始化）
         self.llm_client: Optional[LLMClient] = None
@@ -131,6 +137,10 @@ class ScanOrchestrator:
             await self._publish_error(task_id, str(e))
             raise
 
+        finally:
+            # 清理资源（关闭数据库连接等）
+            await self._cleanup()
+
     async def _initialize(self):
         """初始化所有依赖"""
         logger.debug("初始化依赖")
@@ -143,6 +153,28 @@ class ScanOrchestrator:
             token_threshold=self.config.api.summary_token_threshold,
             keep_recent=5
         )
+
+        # 上下文管理组件
+        if self.config.context_management.enabled:
+            # 初始化记忆存储
+            if self.config.context_management.memory.enabled:
+                self.memory_store = MemoryStore(
+                    db_path=self.config.context_management.memory.sqlite_path
+                )
+                logger.info("记忆存储已初始化", db_path=self.config.context_management.memory.sqlite_path)
+
+            # 初始化上下文管理器
+            self.context_manager = ContextManager(
+                config=self.config,
+                memory_store=self.memory_store
+            )
+            logger.info("上下文管理器已初始化")
+
+    async def _cleanup(self):
+        """清理资源（关闭数据库连接等）"""
+        if self.memory_store:
+            self.memory_store.close()
+            logger.info("记忆存储连接已关闭")
 
     def _create_scan_agent(self, image_name: str, task_id: str):
         """
@@ -165,7 +197,8 @@ class ScanOrchestrator:
             task_id=task_id,
             image_name=image_name,
             config=self.config,
-            storage=self.storage
+            storage=self.storage,
+            context_manager=self.context_manager
         )
 
     async def _build_result(self, agent_result: Dict[str, Any]) -> Dict[str, Any]:

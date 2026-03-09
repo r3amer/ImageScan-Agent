@@ -202,6 +202,7 @@ async def _run_scan_task(task_id: str, image_name: str, session_id: str):
     _ = session_id  # 标记为有意未使用
 
     from ..websocket.manager import manager
+    from ...utils.config import Config
 
     logger.info(
         "后台扫描任务启动",
@@ -210,8 +211,12 @@ async def _run_scan_task(task_id: str, image_name: str, session_id: str):
     )
 
     try:
-        # 创建编排器
-        orchestrator = ScanOrchestrator(task_id=task_id)
+        # 创建编排器（显式传递配置）
+        config = Config()
+        orchestrator = ScanOrchestrator(
+            task_id=task_id,
+            config=config
+        )
 
         # 执行扫描
         result = await orchestrator.scan_image(image_name=image_name, output_file=f"output/{task_id}/result.json")
