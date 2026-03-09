@@ -533,6 +533,60 @@ class ScanAgent(Agent):
             remaining_errors=len(context.get("error_history", []))
         )
 
+    def _is_credential_dict(self, data: Dict) -> bool:
+        """
+        检查数据是否是凭证字典格式 {file_path: [credentials]}
+
+        Args:
+            data: 要检查的数据
+
+        Returns:
+            是否是凭证字典
+        """
+        if not isinstance(data, dict):
+            return False
+
+        # 检查是否包含非凭证列表的字段（如 suspicious_files, statistics 等）
+        non_credential_fields = {
+            "suspicious_files", "statistics", "summary",
+            "high_confidence", "medium_confidence", "low_confidence",
+            "filtered_count", "total_files", "total_layers"
+        }
+        if any(key in data for key in non_credential_fields):
+            return False
+
+        # 检查是否所有值都是列表
+        return all(isinstance(v, list) for v in data.values())
+
+    def _is_valid_credential_object(self, obj: Dict) -> bool:
+        """
+        检查对象是否是有效的凭证对象
+
+        有效的凭证对象必须包含至少一个凭证相关字段：
+        - cred_type
+        - confidence
+        - context 或 raw_value
+
+        Args:
+            obj: 要检查的对象
+
+        Returns:
+            是否是有效的凭证对象
+        """
+        if not isinstance(obj, dict):
+            return False
+
+        # 检查是否包含凭证相关字段
+        has_cred_fields = any(key in obj for key in [
+            "cred_type", "confidence", "context", "raw_value"
+        ])
+
+        # 排除只包含 layer_id 和 file_path 的对象（这些是 suspicious_files 元素）
+        if "layer_id" in obj and "file_path" in obj and not has_cred_fields:
+            return False
+
+        return has_cred_fields
+
     async def _execute_tool(self, decision: Dict) -> Dict:
         """
         执行工具
@@ -577,13 +631,16 @@ class ScanAgent(Agent):
                 credentials = None
                 if "credentials" in data:
                     credentials = data["credentials"]
-                elif isinstance(data, dict) and any(isinstance(v, list) for v in data.values()):
+                elif self._is_credential_dict(data):
                     # data 是 {file_path: [credentials]} 格式
                     # 提取所有凭证到一个列表
                     credentials = []
                     for _file_path, creds in data.items():
                         if isinstance(creds, list):
-                            credentials.extend(creds)
+                            # 验证列表中的元素是凭证对象（包含必要字段）
+                            for cred in creds:
+                                if isinstance(cred, dict) and self._is_valid_credential_object(cred):
+                                    credentials.append(cred)
 
                 if credentials:
                     # 收集文件路径（如果有）
