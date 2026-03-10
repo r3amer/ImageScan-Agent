@@ -250,7 +250,7 @@ async def file_analyze_contents(
                 )
 
             # 业务逻辑：构建 prompt
-            prompt = f"""分析以下文件内容，检测其中的敏感凭证。
+            prompt = f"""分析以下文件内容，检测其中的敏感凭证和危险配置。
 
 文件路径：{file_path}
 

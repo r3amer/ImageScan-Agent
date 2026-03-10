@@ -118,12 +118,14 @@ class ContextCompressor:
         """
         执行压缩
 
+        关键：不只是控制显示，而是主动删除不需要的数据
+
         Args:
             context: 原始上下文
             level: 目标压缩级别
 
         Returns:
-            压缩后的上下文（注意：会修改原 context）
+            压缩后的上下文（新字典，不修改原 context）
         """
         if level == CompressionLevel.NONE:
             return context
@@ -132,28 +134,40 @@ class ContextCompressor:
         compressed = context.copy()
 
         if level >= CompressionLevel.LIGHT:
-            # 清理 tool_history（只保留最近 3 个）
+            # 🔥 关键：主动清理 tool_history，只保留需要的数量
             if "tool_history" in compressed:
-                compressed["tool_history"] = compressed["tool_history"][-3:]
+                # L1: 只保留最近 3 次，并压缩为摘要
+                compressed["tool_history"] = self._compress_tool_history(
+                    compressed["tool_history"],
+                    keep_count=3,
+                    keep_detail=False  # 只保留摘要，不保留完整参数
+                )
 
         if level >= CompressionLevel.MEDIUM:
-            # 清理 error_history（只保留最近 2 个）
+            # MEDIUM: 只保留最近 2 次的摘要
+            if "tool_history" in compressed:
+                compressed["tool_history"] = self._compress_tool_history(
+                    compressed["tool_history"],
+                    keep_count=2,
+                    keep_detail=False
+                )
+            # 清理 error_history（只保留最近 1 个）
             if "error_history" in compressed:
-                compressed["error_history"] = compressed["error_history"][-2:]
-
-            # 清理 findings（只保留摘要统计）
-            if "findings" in compressed and len(compressed["findings"]) > 10:
-                compressed["findings_summary"] = f"发现 {len(compressed['findings'])} 个项目"
-                del compressed["findings"]
+                compressed["error_history"] = compressed["error_history"][-1:]
 
         if level == CompressionLevel.HEAVY:
+            # 🔥 HEAVY: 清空 tool_history，只保留统计信息
+            if "tool_history" in compressed:
+                compressed["tool_history"] = []
             # 只保留最关键的信息
             compressed = {
                 "current_state": compressed.get("current_state"),
                 "current_step": compressed.get("current_step"),
                 "max_steps": compressed.get("max_steps"),
                 "credentials_found": compressed.get("credentials_found", 0),
-                "last_error": compressed.get("last_error")
+                "last_error": compressed.get("last_error"),
+                "goal": compressed.get("goal"),
+                "image_name": compressed.get("image_name")
             }
 
         logger.info(
@@ -166,6 +180,97 @@ class ContextCompressor:
         )
 
         return compressed
+
+    def _compress_tool_history(
+        self,
+        history: List[Dict],
+        keep_count: int,
+        keep_detail: bool
+    ) -> List[Dict]:
+        """
+        压缩工具历史
+
+        Args:
+            history: 原始历史
+            keep_count: 保留条数
+            keep_detail: 是否保留完整参数（True=保留，False=只保留摘要）
+
+        Returns:
+            压缩后的历史
+        """
+        if not history:
+            return []
+
+        # 只保留最近 N 次
+        compressed = history[-keep_count:]
+
+        if not keep_detail:
+            # 只保留摘要，删除完整参数和结果
+            for item in compressed:
+                # 保存参数摘要
+                item["parameters_summary"] = self._summarize_parameters(
+                    item.get("parameters", {})
+                )
+                # 保存结果摘要
+                item["result_summary"] = self._summarize_result(
+                    item.get("result", {})
+                )
+                # 删除详细数据（减少内存占用）
+                item.pop("parameters", None)
+                item.pop("result", None)
+
+        return compressed
+
+    def _summarize_parameters(self, parameters: Dict) -> str:
+        """
+        将参数摘要为短字符串
+
+        Args:
+            parameters: 工具参数
+
+        Returns:
+            参数摘要字符串
+        """
+        if not parameters:
+            return "无参数"
+
+        # 只保留关键参数名和值（截断）
+        items = []
+        for key, value in list(parameters.items())[:5]:
+            value_str = str(value)
+            if len(value_str) > 30:
+                value_str = value_str[:30] + "..."
+            items.append(f"{key}={value_str}")
+
+        return ", ".join(items)
+
+    def _summarize_result(self, result: Dict) -> str:
+        """
+        将结果摘要为短字符串
+
+        Args:
+            result: 工具执行结果
+
+        Returns:
+            结果摘要字符串
+        """
+        if not result:
+            return "无结果"
+
+        # 优先使用 summary 字段
+        if "summary" in result:
+            summary = result["summary"]
+            if isinstance(summary, list):
+                return summary[0] if summary else ""
+            return str(summary)
+
+        # 回退：使用 success 状态
+        if result.get("success"):
+            return "执行成功"
+        elif result.get("success") is False:
+            return f"执行失败: {result.get('error', '未知错误')}"
+
+        return "完成"
 
     def generate_summary(self, context: Dict[str, Any]) -> str:
         """
