@@ -239,7 +239,7 @@ class ScanAgent(Agent):
                 },
                 "decision": decision,
                 "tool_result": self._sanitize_tool_result(tool_result) if tool_result else None,
-                "context": self._sanitize_context(context)
+                "context": self.context # self._sanitize_context(context)
             }
 
             # 保存到文件
@@ -712,21 +712,21 @@ class ScanAgent(Agent):
             # 更新状态（用最后执行的工具名）
             new_context["current_state"] = tool_name
 
-            # 添加到工具历史（让 Agent 可以追溯）
-            if "tool_history" not in new_context:
-                new_context["tool_history"] = []
+            # # 添加到工具历史（让 Agent 可以追溯）
+            # if "tool_history" not in new_context:
+            #     new_context["tool_history"] = []
 
-            new_context["tool_history"].append({
-                "tool": tool_name,
-                "parameters": decision.get("parameters", {}),
-                "result": result["result"],  # 存储完整结果
-                "status": "success",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            })
+            # new_context["tool_history"].append({
+            #     "tool": tool_name,
+            #     "parameters": decision.get("parameters", {}),
+            #     "result": result["result"],  # 存储完整结果
+            #     "status": "success",
+            #     "timestamp": datetime.now(timezone.utc).isoformat()
+            # })
 
-            # 只保留最近 10 次历史（避免上下文过大）
-            if len(new_context["tool_history"]) > 10:
-                new_context["tool_history"] = new_context["tool_history"][-10:]
+            # # 只保留最近 10 次历史（避免上下文过大）
+            # if len(new_context["tool_history"]) > 10:
+            #     new_context["tool_history"] = new_context["tool_history"][-10:]
 
             # 更新步数
             new_context["current_step"] = context.get("current_step", 0) + 1
