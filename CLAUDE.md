@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Last Updated**: 2026-03-09
-**Project Status**: v2.0.0 (ScanAgent 重构版 - 阶段 4 完成)
-**Code Scale**: ~14,825 lines of Python code
+**Last Updated**: 2026-03-11
+**Project Status**: v2.0.0 (ScanAgent 重构版 - 阶段 4 完成 + TruffleHog 验证)
+**Code Scale**: ~15,000+ lines of Python code
 
 ---
 
@@ -39,7 +39,8 @@ ScanAgent (单一智能体)
   ├── LLM 工具调用能力
   │   ├── Docker 工具（保存、检查镜像）
   │   ├── Tar 工具（解压、分析文件）
-  │   └── File 工具（扫描凭证）
+  │   ├── File 工具（扫描凭证）
+  │   └── Verification 工具（TruffleHog 验证）
   │
   ├── 动态决策与调整
   │   ├── 最大 30 步迭代
@@ -92,7 +93,8 @@ imagescan/
 │   ├── registry.py         # 工具注册表（200 行）
 │   ├── docker_tools.py     # Docker 工具（402 行）
 │   ├── tar_tools.py        # Tar 工具（831 行）
-│   └── file_tools.py       # File 工具（543 行）
+│   ├── file_tools.py       # File 工具（543 行）
+│   └── verification_tools.py # 验证工具（TruffleHog）
 │
 ├── storage/                # 存储管理
 │   └── simple_storage.py   # 内存存储管理器（372 行）
@@ -344,6 +346,7 @@ return {
 | `file.exists` | 检查文件是否存在 | `{success, data: {exists}, summary}` |
 | `file.get_size` | 获取文件大小 | `{success, data: {size_mb}, summary}` |
 | `file.analyze_contents` | 分析文件内容（隔离 LLM） | `{success, data: {credentials}, summary: [...]}` |
+| `verify.trufflehog` | TruffleHog 凭证验证（Docker） | `{success, data: {findings, count}, summary: [...]}` |
 
 #### 新工具开发规范
 
@@ -491,11 +494,12 @@ output/
 1. ✅ 镜像解压
 2. ✅ 智能文件筛选
 3. ✅ 内容扫描
-4. ✅ 结果输出
-5. ✅ CLI 命令
-6. ✅ Web UI（基础功能）
-7. ✅ WebSocket 实时通信
-8. ✅ 并发扫描
+4. ✅ TruffleHog 凭证验证
+5. ✅ 结果输出
+6. ✅ CLI 命令
+7. ✅ Web UI（基础功能）
+8. ✅ WebSocket 实时通信
+9. ✅ 并发扫描
 
 ### 验收标准
 
@@ -510,11 +514,11 @@ output/
   ↓
 ✅ MVP v2.0 (单一智能体 + 工具标准化)
   ↓
-🔄 阶段 2: SQLite 持久化存储
+✅ 阶段 2: TruffleHog 凭证验证
   ↓
-⏳ 阶段 3: ChromaDB 向量检索（RAG）
+🔄 阶段 3: SQLite 持久化存储
   ↓
-⏳ 阶段 4: 完整凭证验证
+⏳ 阶段 4: ChromaDB 向量检索（RAG）
   ↓
 ⏳ 阶段 5: 高级功能（模式学习、智能过滤）
 ```
@@ -642,6 +646,7 @@ refactor: 重构代码
 4. **错误处理**: 遵循分级处理策略，确保系统稳定性
 5. **工具标准化**: 新工具必须返回 `{success, data, summary}` 格式
 6. **上下文隔离**: 大量 LLM 调用应在工具层完成，避免污染主对话
+7. **TruffleHog 验证**: 验证工具通过 Docker 运行，需要 Docker 环境；验证会向云厂商发包，注意网络连接和速率限制
 
 ---
 
