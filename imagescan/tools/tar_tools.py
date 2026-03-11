@@ -10,7 +10,7 @@ Tar 工具模块
 """
 
 import asyncio
-import json,config,toml
+import json
 import tarfile
 import os
 from pathlib import Path
@@ -37,6 +37,27 @@ class TarUnpackError(Exception):
 class ManifestNotFoundError(Exception):
     """manifest.json 不存在异常"""
     pass
+
+
+def _parse_manifest_layers(manifest) -> list:
+    """
+    解析 manifest.json 获取层列表
+
+    处理两种格式：
+    1. 列表格式（某些 Docker 版本）
+    2. 字典格式（OCI 标准）
+
+    Args:
+        manifest: 解析后的 manifest 数据
+
+    Returns:
+        层 ID 列表
+    """
+    if isinstance(manifest, list):
+        first_manifest = manifest[0] if manifest else {}
+        return first_manifest.get("Layers", first_manifest.get("layers", []))
+    else:
+        return manifest.get("Layers", [])
 
 
 @registry.register(
@@ -98,12 +119,8 @@ async def tar_unpack(
             with open(manifest_path) as f:
                 manifest = json.load(f)
 
-            # 处理两种格式
-            if isinstance(manifest, list):
-                first_manifest = manifest[0] if manifest else {}
-                layer_list = first_manifest.get("Layers", first_manifest.get("layers", []))
-            else:
-                layer_list = manifest.get("Layers", [])
+            # 使用统一函数解析层列表
+            layer_list = _parse_manifest_layers(manifest)
 
             logger.info("manifest.json 加载成功", layers=len(layer_list))
             return {
@@ -150,22 +167,13 @@ async def tar_unpack(
         with open(manifest_path) as f:
             manifest = json.load(f)
 
-        # 处理两种格式：
-        # 1. 列表格式（某些 Docker 版本）
-        # 2. 字典格式（OCI 标准）
-        if isinstance(manifest, list):
-            # 列表格式：manifest[0]["Layers"] 或 manifest[0]["layers"]
-            first_manifest = manifest[0] if manifest else {}
-            layers_data = first_manifest.get("Layers", first_manifest.get("layers", []))
-            logger.info("manifest.json 加载成功", layers=len(layers_data))
-        else:
-            # 字典格式：manifest["Layers"]
-            layers_data = manifest.get("Layers", [])
-            logger.info("manifest.json 加载成功", layers=len(layers_data))
+        # 使用统一函数解析层列表
+        layers_data = _parse_manifest_layers(manifest)
+        logger.info("manifest.json 加载成功", layers=len(layers_data))
 
         for root, dirs, files in os.walk(extract_path):
-                for momo in dirs:
-                    os.chmod(os.path.join(root, momo), 0o755)
+                for directory in dirs:
+                    os.chmod(os.path.join(root, directory), 0o755)
                 for file in files:
                     file_path = os.path.join(root, file)
                     os.chmod(file_path, 0o644) # 确保文件可读
@@ -374,12 +382,8 @@ async def _list_all_layer_files(extract_path: str) -> Dict[str, List[str]]:
         with open(manifest_path) as f:
             manifest = json.load(f)
 
-        # 处理两种格式的 manifest
-        if isinstance(manifest, list):
-            first_manifest = manifest[0] if manifest else {}
-            layers_data = first_manifest.get("Layers", first_manifest.get("layers", []))
-        else:
-            layers_data = manifest.get("Layers", [])
+        # 使用统一函数解析层列表
+        layers_data = _parse_manifest_layers(manifest)
 
         # 遍历每一层
         for layer_id in layers_data:
@@ -543,10 +547,8 @@ async def tar_analyze_all_layer_files(extract_path: str) -> Dict[str, Any]:
             "文件名分析完成",
             total_files=len(all_files_flat),
             suspicious=len(suspicious_files),
-            filtered=filtered_count
-        )
-        logger.info(
-            '可疑文件: ', suspicious_files
+            filtered=filtered_count,
+            suspicious_files=suspicious_files
         )
 
         return {
@@ -587,7 +589,7 @@ async def tar_analyze_all_layer_files(extract_path: str) -> Dict[str, Any]:
             )
 
             # 构建分段 prompt（只返回可疑文件）
-            chunk_prompt = f"""分析以下 {len(chunk)} 个文件名，识别可能包含敏感凭证的文件。
+            chunk_prompt = f"""分析以下 {len(chunk)} 个文件名，识别可能包含敏感凭证和危险配置的文件。
 
 文件名列表：
 {json.dumps(chunk, ensure_ascii=False, indent=2)}
@@ -808,20 +810,6 @@ async def tar_extract_files_from_layers(
     except Exception as e:
         logger.error("批量从多层提取失败", error=str(e))
         raise TarUnpackError(f"Failed to extract files from layers: {e}")
-
-
-# 便捷函数：获取层大小
-def get_layer_size(layer_tar_path: str) -> int:
-    """
-    获取层 tar 文件的大小
-
-    Args:
-        layer_tar_path: 层 tar 文件路径
-
-    Returns:
-        文件大小（字节）
-    """
-    return Path(layer_tar_path).stat().st_size
 
 
 # 便捷函数：格式化大小

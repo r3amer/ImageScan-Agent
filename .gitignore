@@ -1,6 +1,5 @@
 tmp/
-.env*
-*.json
+.env
 __pycache__
 test*
 config*
@@ -12,5 +11,54 @@ data
 logs
 progress*
 resp*
+docs*
 docs
 agent_memory
+*.md
+venv
+*.log
+*.txt
+*.bak
+*.egg-info
+frontend/.next
+frontend/build
+
+# --- Next.js Specific ---
+.next/
+out/
+build/
+.turbo/
+
+# --- Dependencies ---
+node_modules/
+
+# --- Environment Variables (Crucial for Security) ---
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+# 即使是这些也建议忽略
+.env.apple
+.env.google
+
+# --- Debug/Logs ---
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Operating System ---
+.DS_Store
+Thumbs.db
+
+# --- IDE (Optional but Recommended) ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+*.pid
+
+debug*
+nohup*

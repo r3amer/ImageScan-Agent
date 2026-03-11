@@ -11,18 +11,19 @@
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 from .event_bus import get_event_bus, EventBus
 from .llm_client import get_llm_client, LLMClient
 from .events import Event, create_task_created
 from ..tools.registry import registry
-from ..utils.rules import RuleEngine, register_rule_engine_tools, set_rule_engine_instance
 from ..utils.summary import SummaryManager
 from ..utils.config import Config
 from ..storage.simple_storage import SimpleStorageManager
 from ..utils.logger import get_logger
+from .context import ContextManager
+from ..storage.memory_store import MemoryStore
 
 logger = get_logger(__name__)
 
@@ -41,7 +42,8 @@ class ScanOrchestrator:
     def __init__(
         self,
         event_bus: Optional[EventBus] = None,
-        config: Optional[Config] = None
+        config: Optional[Config] = None,
+        task_id = None
     ):
         """
         初始化编排器
@@ -56,10 +58,15 @@ class ScanOrchestrator:
         # 存储管理器
         self.storage = SimpleStorageManager()
 
+        # 上下文管理组件（延迟初始化）
+        self.context_manager: Optional[ContextManager] = None
+        self.memory_store: Optional[MemoryStore] = None
+
         # 依赖（在 scan_image 中初始化）
         self.llm_client: Optional[LLMClient] = None
-        self.rule_engine: Optional[RuleEngine] = None
         self.summary_manager: Optional[SummaryManager] = None
+
+        self.task_id = task_id or str(uuid.uuid4())
 
     async def scan_image(
         self,
@@ -76,15 +83,14 @@ class ScanOrchestrator:
         Returns:
             扫描结果字典
         """
-        # 生成任务 ID
-        task_id = str(uuid.uuid4())
+        task_id = self.task_id
 
         logger.info("开始扫描", task_id=task_id, image=image_name)
 
         # 设置元数据
         self.storage.set_metadata("task_id", task_id)
         self.storage.set_metadata("image_name", image_name)
-        self.storage.set_metadata("started_at", datetime.utcnow().isoformat())
+        self.storage.set_metadata("started_at", datetime.now(timezone.utc).isoformat())
 
         try:
             # 1. 初始化依赖
@@ -108,13 +114,20 @@ class ScanOrchestrator:
             # 4. 构建结果
             result = await self._build_result(agent_result)
 
-            # 5. 保存到文件（如果指定）
-            if output_file:
-                self.storage.save_to_json(output_file)
-                logger.info("结果已保存", path=output_file)
+            # 5. 更新完成时间
+            self.storage.set_metadata("completed_at", datetime.now(timezone.utc).isoformat())
 
-            # 更新完成时间
-            self.storage.set_metadata("completed_at", datetime.utcnow().isoformat())
+            # 6. 保存到文件（如果指定或自动生成）
+            if output_file is None:
+                # 自动生成路径：output/{task_id}/result.json
+                import os
+                output_dir = f"output/{task_id}"
+                os.makedirs(output_dir, exist_ok=True)
+                output_file = f"{output_dir}/result.json"
+
+            self.storage.save_to_json(output_file)
+            logger.info("结果已保存", path=output_file)
+            result["output_file"] = output_file  # 将路径添加到结果中
 
             logger.info("扫描完成", task_id=task_id, credentials=result["credential_count"])
             return result
@@ -124,6 +137,10 @@ class ScanOrchestrator:
             await self._publish_error(task_id, str(e))
             raise
 
+        finally:
+            # 清理资源（关闭数据库连接等）
+            await self._cleanup()
+
     async def _initialize(self):
         """初始化所有依赖"""
         logger.debug("初始化依赖")
@@ -131,18 +148,33 @@ class ScanOrchestrator:
         # LLM 客户端（使用全局单例，不接受参数）
         self.llm_client = get_llm_client()
 
-        # # 规则引擎
-        # self.rule_engine = RuleEngine(self.config)
-
-        # # 设置全局 RuleEngine 实例并注册工具
-        # set_rule_engine_instance(self.rule_engine)
-        # register_rule_engine_tools()
-
         # 摘要管理器
         self.summary_manager = SummaryManager(
             token_threshold=self.config.api.summary_token_threshold,
             keep_recent=5
         )
+
+        # 上下文管理组件
+        if self.config.context_management.enabled:
+            # 初始化记忆存储
+            if self.config.context_management.memory.enabled:
+                self.memory_store = MemoryStore(
+                    db_path=self.config.context_management.memory.sqlite_path
+                )
+                logger.info("记忆存储已初始化", db_path=self.config.context_management.memory.sqlite_path)
+
+            # 初始化上下文管理器
+            self.context_manager = ContextManager(
+                config=self.config,
+                memory_store=self.memory_store
+            )
+            logger.info("上下文管理器已初始化")
+
+    async def _cleanup(self):
+        """清理资源（关闭数据库连接等）"""
+        if self.memory_store:
+            self.memory_store.close()
+            logger.info("记忆存储连接已关闭")
 
     def _create_scan_agent(self, image_name: str, task_id: str):
         """
@@ -161,12 +193,12 @@ class ScanOrchestrator:
             event_bus=self.event_bus,
             llm_client=self.llm_client,
             tool_registry=registry,
-            rule_engine=self.rule_engine,
             summary_manager=self.summary_manager,
             task_id=task_id,
             image_name=image_name,
             config=self.config,
-            storage=self.storage
+            storage=self.storage,
+            context_manager=self.context_manager
         )
 
     async def _build_result(self, agent_result: Dict[str, Any]) -> Dict[str, Any]:

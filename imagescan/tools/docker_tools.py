@@ -223,7 +223,7 @@ async def docker_exists(image_name: str) -> Dict[str, Any]:
 
 @registry.register(
     "docker.inspect",
-    description="获取 Docker 镜像的详细信息。参数：image_name(镜像名称)。返回：包含镜像元数据的字典（id、tags、size、layers 等）"
+    description="获取 Docker 镜像的详细信息。参数：image_name(镜像名称)。返回：包含 success, data, summary 的字典，data 中包含镜像元数据（id、tags、size、layers 等）"
 )
 async def docker_inspect(image_name: str) -> Dict[str, Any]:
     """
@@ -233,14 +233,23 @@ async def docker_inspect(image_name: str) -> Dict[str, Any]:
         image_name: 镜像名称
 
     Returns:
-        镜像信息字典
-
-    Raises:
-        DockerImageNotFound: 镜像不存在
+        {
+            "success": True,
+            "data": {
+                "id": "...",
+                "tags": [...],
+                "size": 123456789,
+                "created": "...",
+                "architecture": "...",
+                "os": "...",
+                "layers": 5
+            },
+            "summary": "✅ 镜像信息获取成功：nginx:latest (5 layers)"
+        }
 
     示例:
-        >>> info = await docker_inspect("nginx:latest")
-        >>> print(f"ID: {info['id']}")
+        >>> result = await docker_inspect("nginx:latest")
+        >>> print(result["summary"])
     """
     try:
         process = await _run_docker_command(
@@ -254,7 +263,7 @@ async def docker_inspect(image_name: str) -> Dict[str, Any]:
         # 返回第一个（且唯一）镜像的信息
         image_info = inspect_data[0]
 
-        return {
+        image_data = {
             "id": image_info["Id"],
             "tags": image_info.get("RepoTags", []),
             "size": image_info.get("Size", 0),
@@ -264,30 +273,62 @@ async def docker_inspect(image_name: str) -> Dict[str, Any]:
             "layers": len(image_info.get("RootFS", {}).get("Layers", []))
         }
 
+        return {
+            "success": True,
+            "data": image_data,
+            "summary": f"✅ 镜像信息获取成功：{image_name} ({image_data['layers']} layers)"
+        }
+
     except DockerCommandError as e:
         if "No such image" in str(e):
-            raise DockerImageNotFound(f"Image not found: {image_name}")
-        raise DockerCommandError(f"Failed to inspect image: {e}")
+            return {
+                "success": False,
+                "error": f"镜像不存在：{image_name}",
+                "summary": f"❌ 镜像不存在：{image_name}"
+            }
+        return {
+            "success": False,
+            "error": str(e),
+            "summary": f"❌ 获取镜像信息失败：{str(e)}"
+        }
     except json.JSONDecodeError as e:
         logger.error("解析 docker inspect 输出失败", error=str(e))
-        raise DockerCommandError(f"Failed to parse inspect output: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "summary": f"❌ 解析镜像信息失败：{str(e)}"
+        }
 
 
 @registry.register(
     "docker.list_images",
-    description="列出本地所有的 Docker 镜像。参数：无。返回：镜像信息列表，每个镜像包含 id、tags、size 等字段"
+    description="列出本地所有的 Docker 镜像。参数：无。返回：包含 success, data, summary 的字典，data 中包含镜像信息列表"
 )
-async def docker_list_images() -> List[Dict[str, Any]]:
+async def docker_list_images() -> Dict[str, Any]:
     """
     列出本地所有 Docker 镜像
 
     Returns:
-        镜像信息列表
+        {
+            "success": True,
+            "data": {
+                "images": [
+                    {
+                        "id": "...",
+                        "tags": [...],
+                        "size": 123456789,
+                        "created": "..."
+                    },
+                    ...
+                ],
+                "count": 5
+            },
+            "summary": "✅ 找到 5 个本地镜像"
+        }
 
     示例:
-        >>> images = await docker_list_images()
-        >>> for img in images:
-        ...     print(f"{img['tags']} - {img['id']}")
+        >>> result = await docker_list_images()
+        >>> print(result["summary"])
     """
     try:
         process = await _run_docker_command(
@@ -311,29 +352,49 @@ async def docker_list_images() -> List[Dict[str, Any]]:
                     logger.warning("解析镜像行失败", line=line, error=str(e))
 
         logger.info("列出镜像成功", count=len(images))
-        return images
+
+        return {
+            "success": True,
+            "data": {
+                "images": images,
+                "count": len(images)
+            },
+            "summary": f"✅ 找到 {len(images)} 个本地镜像"
+        }
 
     except DockerCommandError as e:
         logger.error("列出镜像失败", error=str(e))
-        raise DockerCommandError(f"Failed to list images: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "summary": f"❌ 列出镜像失败：{str(e)}"
+        }
 
 
 @registry.register(
     "docker.pull",
-    description="从仓库拉取 Docker 镜像。参数：image_name(镜像名称)。返回：无（成功时无返回值）"
+    description="从仓库拉取 Docker 镜像。参数：image_name(镜像名称)。返回：包含 success, data, summary 的字典"
 )
-async def docker_pull(image_name: str) -> None:
+async def docker_pull(image_name: str) -> Dict[str, Any]:
     """
     拉取 Docker 镜像
 
     Args:
         image_name: 镜像名称
 
+    Returns:
+        {
+            "success": True,
+            "data": {"image": "镜像名称"},
+            "summary": "✅ 镜像拉取成功：nginx:latest"
+        }
+
     Raises:
         DockerCommandError: 拉取失败
 
     示例:
-        >>> await docker_pull("nginx:latest")
+        >>> result = await docker_pull("nginx:latest")
+        >>> print(result["summary"])
     """
     logger.info("拉取镜像", image=image_name)
 
@@ -345,9 +406,19 @@ async def docker_pull(image_name: str) -> None:
 
         logger.info("镜像拉取成功", image=image_name)
 
+        return {
+            "success": True,
+            "data": {"image": image_name},
+            "summary": f"✅ 镜像拉取成功：{image_name}"
+        }
+
     except DockerCommandError as e:
         logger.error("拉取镜像失败", image=image_name, error=str(e))
-        raise
+        return {
+            "success": False,
+            "error": str(e),
+            "summary": f"❌ 镜像拉取失败：{str(e)}"
+        }
 
 
 def _parse_size_to_bytes(size_str: str) -> int:

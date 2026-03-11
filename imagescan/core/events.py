@@ -45,6 +45,9 @@ class EventType(str, Enum):
     CREDENTIAL_CONFIRMED = "credential.confirmed"  # 确认为真凭证
     CREDENTIAL_REJECTED = "credential.rejected"  # 判定为误报
 
+    # ========== 凭证发现（批量）==========
+    CREDENTIALS_DISCOVERED = "credentials.discovered"  # 批量凭证发现（工具返回）
+
     # ========== 知识检索 ==========
     KNOWLEDGE_QUERY = "knowledge.query"          # 查询知识库
     KNOWLEDGE_RESULT = "knowledge.result"        # 知识库结果
@@ -275,4 +278,35 @@ def create_error(
         error_message=error_message,
         error_type=error_type,
         **data
+    )
+
+
+def create_credentials_discovered(
+    tool_name: str,
+    task_id: str,
+    credentials: list,
+    file_paths: list = None
+) -> Event:
+    """
+    创建批量凭证发现事件
+
+    Args:
+        tool_name: 发现凭证的工具名称（如 file.analyze_contents）
+        task_id: 任务 ID
+        credentials: 凭证列表
+        file_paths: 发现凭证的文件路径列表（可选）
+
+    Returns:
+        Event: 凭证发现事件
+    """
+    return Event(
+        event_type=EventType.CREDENTIALS_DISCOVERED,
+        source=tool_name,
+        data={
+            "task_id": task_id,
+            "credentials": credentials,
+            "file_paths": file_paths or [],
+            "count": len(credentials)
+        },
+        correlation_id=task_id
     )

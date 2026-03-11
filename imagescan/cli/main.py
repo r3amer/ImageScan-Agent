@@ -59,10 +59,11 @@ def version():
 
 @app.command()
 def scan(
-    image: str = typer.Argument(..., help="Docker 镜像名称（如 nginx:latest）"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出 JSON 文件路径"),
+    images: List[str] = typer.Argument(..., help="Docker 镜像名称（支持多个镜像，如 nginx:latest python:3.11）"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="输出 JSON 文件路径（多镜像时忽略）"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="详细输出（显示凭证详情）"),
     debug: bool = typer.Option(False, "--debug", help="启用调试模式（显示详细日志）"),
+    concurrent: int = typer.Option(3, "--concurrent", "-c", help="并发扫描数量（默认 3）"),
 ):
     """
     扫描 Docker 镜像中的敏感凭证
@@ -70,6 +71,7 @@ def scan(
     示例：
         imagescan scan nginx:latest
         imagescan scan python:3.11 --output results.json
+        imagescan scan nginx:latest python:3.11 redis:latest --concurrent 2
         imagescan scan 20.205.173.138:5000/myimage:tag1 --verbose
         imagescan scan python:3.11 --debug
 
@@ -96,73 +98,156 @@ def scan(
             from ..core.event_bus import get_event_bus
             event_bus = get_event_bus()
 
-            # 创建扫描编排器
-            console.print("[cyan]初始化扫描器...[/cyan]")
-            orchestrator = ScanOrchestrator(
-                event_bus=event_bus,
-                config=config
+            # images 已经是 List[str] 类型
+            image_list = images
+
+            # 多镜像警告
+            if len(image_list) > 1 and output:
+                console.print("[yellow]⚠[/yellow] 多镜像扫描时，--output 参数将被忽略")
+                console.print("[yellow]  每个镜像的结果将自动保存到 output/{task_id}/result.json[/yellow]\n")
+
+            # 创建并发信号量
+            semaphore = asyncio.Semaphore(concurrent)
+
+            # 扫描单个镜像的封装函数
+            async def scan_single_image(image: str) -> tuple[str, dict]:
+                """扫描单个镜像，返回 (image, result) 元组"""
+                async with semaphore:
+                    # 创建独立的编排器实例（每个任务有独立的 task_id）
+                    # 注意：每个实例会自动生成独立的 task_id（UUID）
+                    orchestrator = ScanOrchestrator(
+                        event_bus=event_bus,
+                        config=config
+                    )
+
+                    # 记录 task_id 用于调试
+                    task_id = orchestrator.task_id
+                    logger.info(f"为镜像 {image} 创建独立的扫描任务", task_id=task_id, image=image)
+
+                    # 不指定 output_file，让 scan_image 自动生成 output/{task_id}/result.json
+                    scan_output = None if len(image_list) > 1 else output
+
+                    try:
+                        result = await orchestrator.scan_image(
+                            image_name=image,
+                            output_file=scan_output
+                        )
+                        # 确保 result 中包含 task_id
+                        if "task_id" not in result:
+                            result["task_id"] = task_id
+                        return (image, result)
+                    except Exception as e:
+                        # 返回错误信息，不中断其他扫描
+                        return (image, {
+                            "error": str(e),
+                            "status": "FAILED"
+                        })
+
+            # 显示初始化信息
+            console.print(f"[cyan]初始化扫描器...[/cyan]")
+            console.print(f"[cyan]待扫描镜像 ({len(image_list)} 个):[/cyan]")
+            for img in image_list:
+                console.print(f"  • {img}")
+            console.print(f"[cyan]并发数: {concurrent}[/cyan]\n")
+
+            # 并发执行所有扫描
+            console.print("[cyan]开始并发扫描...[/cyan]\n")
+
+            results = await asyncio.gather(
+                *[scan_single_image(img) for img in image_list],
+                return_exceptions=True
             )
 
-            console.print("[green]✓[/green] 扫描器初始化完成\n")
+            # 处理结果
+            successful = []
+            failed = []
 
-            # 执行扫描
-            console.print(f"[cyan]开始扫描镜像 {image}[/cyan]\n")
+            for item in results:
+                if isinstance(item, Exception):
+                    failed.append(("", {"error": str(item), "status": "FAILED"}))
+                else:
+                    image, result = item
+                    if result.get("status") == "FAILED":
+                        failed.append((image, result))
+                    else:
+                        successful.append((image, result))
 
-            result = await orchestrator.scan_image(
-                image_name=image,
-                output_file=output
-            )
+            # 显示汇总结果
+            console.print("\n[bold cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold cyan]")
+            console.print(f"[bold green]扫描完成！[/bold green]")
+            console.print(f"  成功: [green]{len(successful)}[/green] 个")
+            console.print(f"  失败: [red]{len(failed)}[/red] 个")
+            console.print("[bold cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/bold cyan]\n")
 
-            # 显示结果
-            console.print("\n[green]✓[/green] 扫描完成！")
-            console.print(f"  镜像: {image}")
-            console.print(f"  任务 ID: {result.get('task_id', 'N/A')}")
-            console.print(f"  发现凭证: [yellow]{result.get('credential_count', 0)}[/yellow] 个")
-            console.print(f"  风险等级: ", nl=False)
+            # 显示成功的结果
+            if successful:
+                console.print("[bold green]成功扫描的镜像:[/bold green]\n")
+                for image, result in successful:
+                    console.print(f"[cyan]▸ {image}[/cyan]")
+                    task_id = result.get('task_id', 'N/A')
+                    console.print(f"  任务 ID: {task_id}")
+                    console.print(f"  发现凭证: [yellow]{result.get('credential_count', 0)}[/yellow] 个")
 
-            # 风险等级颜色
-            risk_level = result.get("risk_level", "LOW")
-            if risk_level == "HIGH":
-                console.print("[red]HIGH[/red]")
-            elif risk_level == "MEDIUM":
-                console.print("[yellow]MEDIUM[/yellow]")
-            else:
-                console.print("[green]LOW[/green]")
+                    # 显示输出文件路径
+                    output_file = result.get('output_file', '')
+                    if output_file:
+                        console.print(f"  结果保存: [cyan]{output_file}[/cyan]")
 
-            # 显示凭证类型分布
-            if verbose:
-                credentials = result.get("credentials", [])
-                if credentials:
-                    from collections import Counter
-                    cred_types = Counter(cred.get("type", "UNKNOWN") for cred in credentials)
+                    # 风险等级颜色
+                    risk_level = result.get("risk_level", "LOW")
+                    if risk_level == "HIGH":
+                        console.print(f"  风险等级: [red]HIGH[/red]")
+                    elif risk_level == "MEDIUM":
+                        console.print(f"  风险等级: [yellow]MEDIUM[/yellow]")
+                    else:
+                        console.print(f"  风险等级: [green]LOW[/green]")
 
-                    console.print("\n  [bold]凭证类型分布:[/bold]")
-                    for cred_type, count in cred_types.most_common():
-                        console.print(f"    {cred_type}: {count}")
+                    # 显示凭证类型分布（verbose 模式）
+                    if verbose:
+                        credentials = result.get("credentials", [])
+                        if credentials:
+                            from collections import Counter
+                            cred_types = Counter(cred.get("type", "UNKNOWN") for cred in credentials)
 
-                    console.print("\n  [bold]发现的凭证:[/bold]")
-                    for cred in credentials[:10]:  # 最多显示10个
-                        cred_type = cred.get("type", "UNKNOWN")
-                        conf = cred.get("confidence", 0.0)
-                        file_path = cred.get("file_path", "")
+                            console.print("  [bold]凭证类型分布:[/bold]")
+                            for cred_type, count in cred_types.most_common():
+                                console.print(f"    {cred_type}: {count}")
 
-                        # 置信度样式
-                        if conf >= 0.8:
-                            conf_style = f"[red]{conf:.2f}[/red]"
-                        elif conf >= 0.5:
-                            conf_style = f"[yellow]{conf:.2f}[/yellow]"
-                        else:
-                            conf_style = f"{conf:.2f}"
+                            console.print("  [bold]发现的凭证:[/bold]")
+                            for cred in credentials[:5]:  # 多镜像时只显示前5个
+                                cred_type = cred.get("type", "UNKNOWN")
+                                conf = cred.get("confidence", 0.0)
+                                file_path = cred.get("file_path", "")
 
-                        console.print(f"  • {cred_type} ({conf_style})")
-                        console.print(f"    文件: {file_path}")
+                                if conf >= 0.8:
+                                    conf_style = f"[red]{conf:.2f}[/red]"
+                                elif conf >= 0.5:
+                                    conf_style = f"[yellow]{conf:.2f}[/yellow]"
+                                else:
+                                    conf_style = f"{conf:.2f}"
 
-                    if len(credentials) > 10:
-                        console.print(f"\n  ... 还有 {len(credentials) - 10} 个凭证")
+                                console.print(f"    • {cred_type} ({conf_style})")
+                                console.print(f"      文件: {file_path}")
+
+                            if len(credentials) > 5:
+                                console.print(f"    ... 还有 {len(credentials) - 5} 个凭证")
+
+                    console.print()
+
+            # 显示失败的结果
+            if failed:
+                console.print("[bold red]扫描失败的镜像:[/bold red]\n")
+                for image, result in failed:
+                    console.print(f"[red]▸ {image}[/red]")
+                    console.print(f"  错误: {result.get('error', 'Unknown error')}")
+                    console.print()
 
             # 保存结果提示
-            if output:
-                console.print(f"\n[cyan]✓[/cyan] 结果已保存到: [cyan]{output}[/cyan]")
+            if len(image_list) > 1:
+                console.print("[cyan]所有结果已保存到 output/{task_id}/result.json[/cyan]")
+            elif successful:
+                result_path = successful[0][1].get("output_file", output)
+                console.print(f"\n[cyan]✓[/cyan] 结果已保存到: [cyan]{result_path}[/cyan]")
 
         except Exception as e:
             console.print(f"\n[red]✗[/red] 扫描失败: {e}")

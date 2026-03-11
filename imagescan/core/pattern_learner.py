@@ -12,7 +12,7 @@
 import json
 import os
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 from collections import Counter
 
@@ -89,7 +89,7 @@ class PatternLearner:
                 os.makedirs(dir_path, exist_ok=True)
 
             # 更新统计
-            self._learned_data["last_updated"] = datetime.utcnow().isoformat()
+            self._learned_data["last_updated"] = datetime.now(timezone.utc).isoformat()
             self._learned_data["stats"]["total_prefixes"] = len(
                 self._learned_data["patterns"]["path_prefixes"]
             )
@@ -308,7 +308,7 @@ class PatternLearner:
             新增的模式数量
         """
         learned_count = 0
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         # 添加路径前缀
         for prefix in patterns.get("path_prefixes", []):

@@ -12,7 +12,7 @@
 
 import json
 from typing import Dict, List, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 
 
@@ -38,7 +38,7 @@ class CredentialRecord:
     line_number: Optional[int] = None
     context: Optional[str] = None
     validation_status: str = "PENDING"
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 @dataclass
@@ -93,7 +93,7 @@ class SimpleStorageManager:
     - 阶段 3: 添加 ChromaDB 向量检索（RAG）
     """
 
-    def __init__(self):
+    def __init__(self, task_id=None):
         """初始化存储管理器"""
         # 凭证记录
         self._credentials: List[CredentialRecord] = []
@@ -106,7 +106,7 @@ class SimpleStorageManager:
             "started_at": None,
             "completed_at": None,
             "image_name": None,
-            "task_id": None
+            "task_id": task_id
         }
 
         # Token 使用统计
@@ -152,7 +152,7 @@ class SimpleStorageManager:
             line_number=cred_data.get("line_number"),
             context=cred_data.get("context"),
             validation_status=cred_data.get("validation_status", "PENDING"),
-            created_at=cred_data.get("created_at", datetime.utcnow().isoformat())
+            created_at=cred_data.get("created_at", datetime.now(timezone.utc).isoformat())
         )
         self.add_credential(credential)
 
@@ -315,6 +315,8 @@ class SimpleStorageManager:
         Args:
             output_path: 输出文件路径
         """
+        import os
+
         # 构建结果数据
         result_data = {
             "metadata": self._metadata,
@@ -333,6 +335,11 @@ class SimpleStorageManager:
                 for cred in self._credentials
             ]
         }
+
+        # 确保目录存在
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
 
         # 保存到文件
         with open(output_path, 'w', encoding='utf-8') as f:

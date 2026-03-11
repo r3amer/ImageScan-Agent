@@ -37,10 +37,10 @@ class LLMClient:
     """
 
     # 系统提示词：容器安全专家（精简版 - 优化性能）
-    SYSTEM_INSTRUCTION = """你是容器安全专家，负责分析 Docker 镜像中的敏感凭证。
+    SYSTEM_INSTRUCTION = """你是容器安全专家，负责分析 Docker 镜像中的敏感凭证和危险配置。
 
 ## 核心任务
-识别文件中的真实敏感凭证（硬编码的密钥、密码、令牌等），忽略配置引用和占位符。
+识别文件中的真实敏感凭证（硬编码的密钥、密码、令牌等）和危险配置，忽略配置引用和占位符。
 
 ## 误报识别规则（严格遵守）
 
@@ -224,80 +224,12 @@ API_KEY, PASSWORD, TOKEN, CERTIFICATE, PRIVATE_KEY, DATABASE_URL, AWS_KEY, SSH_K
         if context:
             context_str = json.dumps(context, ensure_ascii=False, indent=2)
             messages[1]["content"] = f"{prompt}\n\n上下文信息：\n{context_str}"
+        
+        print('%'*40)
+        print(f"提示词\n\n{messages[1]['content']}")
+        print('%'*30)
 
         return await self._call_llm(messages, temperature=temperature)
-
-    async def analyze_filenames(
-        self,
-        filenames: List[str],
-        layer_id: Optional[str] = None
-    ) -> Dict[str, List[str]]:
-        """
-        分析文件名，识别可能包含敏感凭证的文件
-
-        Args:
-            filenames: 文件名列表
-            layer_id: 层 ID（可选）
-
-        Returns:
-            {
-                "high_confidence": [...],  # 高置信度敏感文件
-                "medium_confidence": [...],  # 中等置信度
-                "low_confidence": [...]  # 低置信度
-            }
-        """
-        if not filenames:
-            return {"high_confidence": [], "medium_confidence": [], "low_confidence": []}
-
-        # 限制文件数量（避免 token 超限）
-        max_files = 5000
-        if len(filenames) > max_files:
-            logger.warning(
-                "文件数量过多，进行截断",
-                total_files=len(filenames),
-                truncated=max_files
-            )
-            filenames = filenames[:max_files]
-
-        prompt = f"""分析以下 {len(filenames)} 个文件名，识别可能包含敏感凭证的文件。
-
-文件名列表：
-{json.dumps(filenames, ensure_ascii=False, indent=2)}
-
-请将文件分为三类：
-1. high_confidence: 极高可能是敏感文件（如 .env、config.json、secret.pem 等）
-2. medium_confidence: 可能是敏感文件（如 config、settings 等）
-3. low_confidence: 疑似敏感文件（需要进一步检查）
-
-返回 JSON 格式：
-{{
-    "high_confidence": ["文件路径1", "文件路径2"],
-    "medium_confidence": ["文件路径3"],
-    "low_confidence": ["文件路径4"]
-}}
-
-规则：
-- 忽略系统目录（/usr、/bin、/lib、/etc/passwd 等）
-- 忽略明显的库文件（node_modules、vendor 等）
-- 重点关注配置文件、环境文件、密钥文件
-- 对于测试文件、示例文件，降低置信度"""
-
-        result = await self.think(prompt, temperature=0.0)
-
-        # 验证返回格式
-        for key in ["high_confidence", "medium_confidence", "low_confidence"]:
-            if key not in result:
-                result[key] = []
-
-        logger.info(
-            "文件名分析完成",
-            layer_id=layer_id,
-            high_count=len(result.get("high_confidence", [])),
-            medium_count=len(result.get("medium_confidence", [])),
-            low_count=len(result.get("low_confidence", []))
-        )
-
-        return result
 
     async def validate_credential(
         self,

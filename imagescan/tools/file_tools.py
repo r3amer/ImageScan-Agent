@@ -239,7 +239,7 @@ async def file_analyze_contents(
 
         try:
             # 业务逻辑：限制内容长度（避免 token 超限）
-            max_length = 12000
+            max_length = 100000# 12000
             if len(content) > max_length:
                 content = content[:max_length] + "\n... (内容已截断)"
                 logger.warning(
@@ -250,7 +250,7 @@ async def file_analyze_contents(
                 )
 
             # 业务逻辑：构建 prompt
-            prompt = f"""分析以下文件内容，检测其中的敏感凭证。
+            prompt = f"""分析以下文件内容，检测其中的敏感凭证和危险配置。
 
 文件路径：{file_path}
 
@@ -287,12 +287,35 @@ async def file_analyze_contents(
             llm_result = await llm_client.think(prompt, temperature=0.0)
 
             # 业务逻辑：验证返回格式并添加文件路径信息
-            credentials = llm_result.get("credentials", [])
+            raw_credentials = llm_result.get("credentials", [])
 
-            for cred in credentials:
+            # 验证凭证：只保留有效的凭证（必须有 context 或 raw_value）
+            credentials = []
+            for cred in raw_credentials:
+                # 跳过无效凭证：context 和 raw_value 都为空
+                if not cred.get("context") and not cred.get("raw_value"):
+                    logger.debug(
+                        "跳过无效凭证（无上下文）",
+                        file=file_path,
+                        cred_type=cred.get("cred_type", "UNKNOWN")
+                    )
+                    continue
+
+                # 跳过低置信度凭证（confidence <= 0）
+                if cred.get("confidence", 0) <= 0:
+                    logger.debug(
+                        "跳过低置信度凭证",
+                        file=file_path,
+                        confidence=cred.get("confidence", 0)
+                    )
+                    continue
+
+                # 添加文件路径信息
                 cred["file_path"] = file_path
                 if "layer_id" not in cred:
                     cred["layer_id"] = layer_id
+
+                credentials.append(cred)
 
             results[file_path] = credentials
             stats["successful"] += 1
@@ -331,10 +354,10 @@ async def file_analyze_contents(
 
 # ========== 工具：过滤路径 ==========
 
-@registry.register(
-    "file.filter_paths",
-    description="过滤文件路径列表。参数：file_paths(文件路径列表), prefix_exclude(排除的路径前缀列表), keywords_exclude(排除的关键词列表)。返回：过滤后的文件路径列表"
-)
+# @registry.register(
+#     "file.filter_paths",
+#     description="过滤文件路径列表。参数：file_paths(文件路径列表), prefix_exclude(排除的路径前缀列表), keywords_exclude(排除的关键词列表)。返回：过滤后的文件路径列表"
+# )
 def file_filter_paths(
     file_paths: List[str],
     prefix_exclude: List[str],

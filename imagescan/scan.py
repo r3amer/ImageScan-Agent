@@ -7,7 +7,7 @@ ImageScan 扫描模块
 import sys
 import asyncio
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from .core.orchestrator import ScanOrchestrator
@@ -156,14 +156,14 @@ async def scan_image(
         print_info(f"开始扫描镜像: {image_name}")
         print()
 
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
 
         result = await orchestrator.scan_image(
             image_name=image_name,
             output_file=output_file
         )
 
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         duration = (end_time - start_time).total_seconds()
 
         # 显示结果

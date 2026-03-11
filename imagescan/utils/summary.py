@@ -11,7 +11,7 @@
 
 import json
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 
 
@@ -70,7 +70,7 @@ class SummaryManager:
         self.conversation_history.append({
             "role": role,
             "content": content,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
     def record_tool_call(self, tool_name: str):

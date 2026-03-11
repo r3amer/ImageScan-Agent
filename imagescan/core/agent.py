@@ -13,7 +13,7 @@ Agent 基类模块
 import asyncio
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from .events import Event, EventType
@@ -111,7 +111,7 @@ class Agent(ABC):
             source=self.name,
             data={
                 "agent_name": self.name,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
         )
 

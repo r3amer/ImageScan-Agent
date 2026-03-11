@@ -10,7 +10,7 @@
 """
 
 from typing import List, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..utils.rules import RuleEngine
 
@@ -27,7 +27,7 @@ class FilenameFilterResult:
         self.filtered_files = filtered_files
         self.excluded_count = excluded_count
         self.total_count = total_count
-        self.filtered_at = datetime.utcnow()
+        self.filtered_at = datetime.now(timezone.utc)
 
     @property
     def pass_rate(self) -> float:

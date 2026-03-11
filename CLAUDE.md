@@ -2,61 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Last Updated**: 2025-03-01
-**Project Status**: 🔄 Complete Rebuild (规范文档已完成，开发待开始)
+**Last Updated**: 2026-03-11
+**Project Status**: v2.0.0 (ScanAgent 重构版 - 阶段 4 完成 + TruffleHog 验证)
+**Code Scale**: ~15,000+ lines of Python code
 
 ---
 
-## 📚 项目知识库
-
-本项目遵循严格的文档驱动开发规范。**在编写任何代码之前，请先阅读以下规范文档**：
-
-### 必读文档（优先级顺序）
-
-1. **[PRD.md](docs/PRD.md)** - 产品需求文档
-   - 完整功能规格
-   - MVP 范围（CLI + 基本扫描）
-   - 验收标准（功能可用 + 性能基准）
-   - 非目标（明确不做什么）
-   - **重点**: 验收标准、用户故事
-
-2. **[TECH_STACK.md](docs/TECH_STACK.md)** - 技术栈文档（严格版本锁定）
-   - Python 3.11.8（严格）
-   - Next.js 14.0.4 LTS
-   - FastAPI 0.104.1
-   - **所有依赖版本已锁定，不得随意更改**
-
-3. **[BACKEND_STRUCTURE.md](docs/BACKEND_STRUCTURE.md)** - 后端结构文档
-   - 数据模型（ScanTask、Credential、ScanLayer）
-   - SQLite 数据库模式
-   - ChromaDB 向量数据库模式
-   - API 端点设计
-   - Agent 通信协议
-
-4. **[APP_FLOW.md](docs/APP_FLOW.md)** - 应用流程文档（最详尽）
-   - CLI 交互流程（5 个子命令）
-   - Web 界面流程（轻量级控制台）
-   - Agent 推理流程（主从模式）
-   - 任务生命周期
-   - 数据流详解
-   - 异常流处理
-   - Agent 交互序列图
-   - 工具调用详解
-
-5. **[IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)** - 实施计划文档
-   - 10 个阶段的详细构建步骤
-   - 每个步骤的验收标准
-   - **按此顺序逐步构建**
-
-6. **[progress.txt](progress.txt)** - 进度跟踪文件
-   - 当前开发状态
-   - 已完成的功能
-   - 进行中的任务
-   - 下一步计划
-
----
-
-## 🎯 项目概述
+## 项目概述
 
 **项目名称**: ImageScan-Agent
 
@@ -66,88 +18,149 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **项目定位**: 基于 Google Gemini 2.5 Flash LLM 的 Docker 镜像敏感凭证扫描智能体系统
 
+**核心特性**:
+- 单一智能体自主规划（非主从模式）
+- LLM 工具调用能力
+- 事件驱动架构
+- 工具返回值标准化
+- 隔离上下文设计
+
 ---
 
-## 🏗️ 架构设计（主从 Agent 模式）
+## 架构设计（单一智能体模式）
 
 ### Agent 架构
 
 ```
-主 Agent (Master Agent)
-  ├── 规划与协调
+ScanAgent (单一智能体)
+  ├── 自主规划扫描流程
+  │   └── LLM 动态规划扫描步骤
   │
-  ├── 从 Agent 1: ScanExecutorAgent
-  │   └── 执行镜像解压、文件扫描
+  ├── LLM 工具调用能力
+  │   ├── Docker 工具（保存、检查镜像）
+  │   ├── Tar 工具（解压、分析文件）
+  │   ├── File 工具（扫描凭证）
+  │   └── Verification 工具（TruffleHog 验证）
   │
-  ├── 从 Agent 2: ValidationAgent
-  │   └── 验证凭证有效性、静态分析
+  ├── 动态决策与调整
+  │   ├── 最大 30 步迭代
+  │   ├── 重复调用检测
+  │   └── 上下文压缩（429 错误时）
   │
-  ├── 从 Agent 3: KnowledgeRetrievalAgent
-  │   └── 查询 RAG 知识库、匹配历史模式
-  │
-  └── 从 Agent 4: ReflectionAgent
-      └── 置信度评估、二次审核
+  └── 事件驱动通信
+      └── 发布进度、凭证、完成等事件
 ```
+
+### 设计优势
+
+| 特性 | 优势 |
+|------|------|
+| **单一智能体** | 简化架构，减少通信开销 |
+| **LLM 工具调用** | 真正的智能体自主规划能力 |
+| **事件驱动** | 解耦通信，支持实时反馈 |
+| **上下文隔离** | 工具层独立 LLM 调用，避免 Token 超限 |
+| **标准化返回** | 零硬编码，易于扩展 |
 
 ### 通信机制
 
-- **事件总线**: `asyncio.Queue`
-- **事件类型**: TaskCreated、ProgressUpdate、CredentialFound、TaskCompleted
+- **事件总线**: `asyncio.Queue` (发布/订阅模式)
+- **事件类型**: 15 种（TaskCreated, ProgressUpdate, CredentialFound, TaskCompleted 等）
 - **实时反馈**:
-  - CLI: 进度条 (Rich Progress)
-  - Web: 轮询 (降级方案)
+  - CLI: Rich Progress 进度条
+  - Web: WebSocket 连接（实时推送）
 
 ---
 
-## 📦 项目结构
+## 项目结构
 
 ```
 imagescan/
-├── core/               # 核心抽象类
-│   ├── agent.py       # Agent 基类
-│   ├── event_bus.py   # 事件总线
-│   ├── events.py      # 事件定义
-│   └── llm_client.py  # LLM 客户端
+├── core/                    # 核心抽象类
+│   ├── agent.py            # Agent 基类（325 行）
+│   ├── event_bus.py        # 事件总线（387 行）
+│   ├── events.py           # 事件定义（279 行）
+│   ├── llm_client.py       # LLM 客户端（443 行）
+│   └── orchestrator.py     # 扫描编排器（229 行）
 │
-├── agents/            # Agent 实现
-│   ├── master_agent.py
-│   ├── executor_agent.py
-│   ├── validation_agent.py
-│   ├── knowledge_agent.py
-│   └── reflection_agent.py
+├── agents/                 # Agent 实现
+│   └── scan_agent.py       # ScanAgent（804 行）
+│       ├── 两阶段执行（准备 + 执行）
+│       ├── LLM 工具调用
+│       ├── 动态决策
+│       └── 上下文压缩
 │
-├── tools/             # 工具注册与实现
-│   ├── registry.py    # 工具注册表
-│   ├── docker_tools.py
-│   ├── tar_tools.py
-│   └── file_tools.py
+├── tools/                  # 工具注册与实现
+│   ├── registry.py         # 工具注册表（200 行）
+│   ├── docker_tools.py     # Docker 工具（402 行）
+│   ├── tar_tools.py        # Tar 工具（831 行）
+│   ├── file_tools.py       # File 工具（543 行）
+│   └── verification_tools.py # 验证工具（TruffleHog）
 │
-├── models/            # 数据模型
-│   ├── task.py
-│   ├── credential.py
-│   └── layer.py
+├── storage/                # 存储管理
+│   └── simple_storage.py   # 内存存储管理器（372 行）
+│       ├── SimpleStorageManager
+│       ├── CredentialRecord
+│       └── ScanStatistics
 │
-├── api/               # FastAPI 端点
-│   ├── scan.py
-│   ├── credentials.py
-│   └── config.py
+├── models/                 # 数据模型
+│   ├── task.py             # 扫描任务模型（93 行）
+│   └── credential.py       # 凭证模型（134 行）
 │
-├── cli/               # 命令行界面
-│   └── main.py
+├── api/                    # FastAPI 后端
+│   ├── main.py             # 应用入口（135 行）
+│   ├── routes/             # API 路由
+│   │   ├── scan.py         # 扫描 API
+│   │   ├── chat.py         # 聊天 API
+│   │   └── events.py       # 事件 API
+│   ├── websocket/          # WebSocket
+│   │   └── manager.py      # 连接管理器
+│   └── models/             # API 数据模型
 │
-├── utils/             # 工具函数
-│   ├── config.py      # 配置管理
-│   ├── logger.py      # 日志系统
-│   └── database.py    # 数据库操作
+├── cli/                    # 命令行界面
+│   └── main.py             # CLI 入口（501 行）
+│       ├── scan 子命令
+│       ├── history 子命令
+│       ├── config 子命令
+│       └── verify 子命令
 │
-└── tests/             # 测试
+├── utils/                  # 工具函数
+│   ├── config.py           # 配置管理
+│   ├── logger.py           # 日志系统
+│   ├── database.py         # 数据库操作
+│   ├── rules.py            # 规则引擎
+│   └── summary.py          # 摘要管理器
+│
+└── tests/                  # 测试
     ├── unit/
     └── integration/
+
+frontend/                   # Next.js 前端
+├── app/                    # Next.js App Router
+│   ├── page.tsx            # 主页面
+│   └── layout.tsx          # 布局
+├── components/             # React 组件
+│   ├── ScanInput.tsx       # 扫描输入
+│   ├── ScanResults.tsx     # 结果展示
+│   ├── ScanProgress.tsx    # 进度条
+│   ├── EventLog.tsx        # 事件日志
+│   ├── ScanHistory.tsx     # 扫描历史
+│   └── ScanInterface.tsx   # 扫描界面
+├── hooks/                  # React Hooks
+│   └── useWebSocket.ts     # WebSocket 连接
+└── types/                  # TypeScript 类型
+    └── scan.ts             # 扫描类型
+
+docs/                       # 项目文档
+├── PRD.md                  # 产品需求文档
+├── TECH_STACK.md           # 技术栈文档
+├── BACKEND_STRUCTURE.md    # 后端结构文档
+├── APP_FLOW.md             # 应用流程文档
+└── IMPLEMENTATION_PLAN.md  # 实施计划文档
 ```
 
 ---
 
-## 🔧 开发环境配置
+## 开发环境配置
 
 ### 必需软件
 
@@ -195,6 +208,7 @@ low_probability_keywords = ["node_modules", ".git", "__pycache__"]
 confidence_threshold = 0.7
 max_file_size_mb = 10
 max_layers = 100
+max_steps = 30
 enable_verification = true
 verification_mode = "static"
 
@@ -212,22 +226,27 @@ chromadb_path = "./data/chromadb"
 
 ---
 
-## 🚀 运行应用
+## 运行应用
 
 ### CLI 命令
 
 ```bash
-# 扫描镜像
+# 扫描镜像（支持并发）
 imagescan scan nginx:latest
+imagescan scan nginx:latest alpine:latest --concurrent 2
+imagescan scan nginx:latest --verbose --debug
 
 # 查看历史
 imagescan history
+imagescan history --limit 10 --verbose
 
 # 配置管理
-imagescan config
+imagescan config --show
+imagescan config --edit
 
 # 验证凭证
-imagescan verify <credential_id>
+imagescan verify <task_id>
+imagescan verify <task_id> --revalidate
 ```
 
 ### API 服务
@@ -253,7 +272,7 @@ open http://localhost:3000
 
 ---
 
-## 🔑 关键设计决策
+## 关键设计决策
 
 ### 技术选型
 
@@ -261,9 +280,9 @@ open http://localhost:3000
 |------|------|
 | Python 3.11 | 严格锁定，兼容性最佳 |
 | 仅用 Gemini 2.5 Flash | 成本低，速度快 |
-| SQLite + ChromaDB | 本地持久化，嵌入式部署 |
-| 主从 Agent | 高度自主，职责分离 |
-| 事件总线 (asyncio.Queue) | 解耦通信，异步高效 |
+| 单一 ScanAgent | 简化架构，真正的智能体自主规划 |
+| 事件驱动 | 解耦通信，异步高效 |
+| SimpleStorageManager (内存) | MVP 阶段快速迭代 |
 
 ### 错误处理
 
@@ -278,8 +297,9 @@ open http://localhost:3000
 - 扫描速度: < 5 分钟/GB
 - 内存占用: < 2GB（中等规模镜像）
 - 异步处理：asyncio
+- 并发扫描：支持多镜像并发
 
-### 工具返回值标准化架构（2025-03 更新）
+### 工具返回值标准化架构
 
 **核心原则**: 所有工具必须返回统一的 `{success, data, summary}` 格式，消除 Agent 层的硬编码逻辑。
 
@@ -308,31 +328,25 @@ return {
 3. **易于扩展**: 新工具只需返回 `summary` 字段，无需修改 Agent 代码
 4. **Token 优化**: 主对话只保留摘要，详细数据存储在 Storage 中
 
-#### 实现细节
-
-**工具层 (tools/*.py)**:
-- 每个工具包含完整的业务逻辑
-- 调用 `llm_client.think()` 进行独立 LLM 分析
-- 返回结构化结果，包含 `summary` 字段
-
-**Agent 层 (agents/scan_agent.py)**:
-- 通用 `_format_tool_result()` 方法处理所有工具结果
-- 不再有任何硬编码的 if-elif 工具处理逻辑
-- 特殊工具（如 `file.analyze_contents`）将数据存储到 Storage
-
-**LLM 客户端层 (core/llm_client.py)**:
-- 只提供通用的 `think(prompt, context, temperature)` 方法
-- 不包含任何业务逻辑
-
 #### 已实现的标准工具
 
 | 工具 | 功能 | 返回值 |
 |------|------|--------|
 | `docker.save` | 保存镜像为 tar | `{success, data: {tar_path, size_mb}, summary}` |
 | `docker.exists` | 检查镜像是否存在 | `{success, data: {exists}, summary}` |
+| `docker.inspect` | 获取镜像详细信息 | `{success, data: {manifest}, summary}` |
+| `docker.list_images` | 列出本地所有镜像 | `{success, data: {images}, summary}` |
+| `docker.pull` | 拉取镜像 | `{success, data: {image}, summary}` |
 | `tar.unpack` | 解压镜像 tar | `{success, data: {manifest, layers_count}, summary}` |
-| `tar.analyze_all_layer_files` | 分析文件名（隔离） | `{success, data: {suspicious_files, ...}, summary: [...]}` |
-| `file.analyze_contents` | 分析文件内容（隔离） | `{success, data: {credentials}, summary: [...]}` |
+| `tar.list_layers` | 列出镜像层 | `{success, data: {layers}, summary}` |
+| `tar.extract_files` | 批量提取文件 | `{success, data: {files}, summary}` |
+| `tar.analyze_all_layer_files` | 分析文件名（隔离 LLM） | `{success, data: {suspicious_files}, summary: [...]}` |
+| `tar.extract_files_from_layers` | 从多层批量提取 | `{success, data: {files}, summary}` |
+| `file.extract_from_layer` | 从层中提取文件 | `{success, data: {file_path}, summary}` |
+| `file.exists` | 检查文件是否存在 | `{success, data: {exists}, summary}` |
+| `file.get_size` | 获取文件大小 | `{success, data: {size_mb}, summary}` |
+| `file.analyze_contents` | 分析文件内容（隔离 LLM） | `{success, data: {credentials}, summary: [...]}` |
+| `verify.trufflehog` | TruffleHog 凭证验证（Docker） | `{success, data: {findings, count}, summary: [...]}` |
 
 #### 新工具开发规范
 
@@ -364,122 +378,187 @@ async def my_tool(param: str) -> Dict[str, Any]:
 
 ---
 
-## 📊 数据流
+## 数据流
 
 ### 扫描流程
 
 ```
 用户输入 (镜像名称)
   ↓
-主 Agent 接收任务
+Orchestrator 初始化依赖
+  ├─ LLMClient
+  ├─ ToolRegistry
+  └─ SimpleStorageManager
   ↓
-主 Agent 制定计划（调用 LLM）
+创建 ScanAgent
   ↓
-执行 Agent
-  ├─ 保存镜像为 tar
-  ├─ 解压 tar 获取层列表
-  ├─ 逐层分析文件名（LLM）
-  ├─ 提取可疑文件内容
-  └─ 扫描凭证（LLM）
+两阶段执行
+  ├─ 准备阶段：生成扫描计划（LLM）
+  └─ 执行阶段：按计划执行（最多 30 步）
+      ├─ LLM 决定调用哪个工具
+      ├─ 工具返回结果（标准格式）
+      ├─ Agent 格式化结果为摘要
+      ├─ 根据结果动态调整策略
+      └─ 重复直到完成或达到最大步数
   ↓
-验证 Agent
-  ├─ 静态分析（格式、熵值）
-  └─ 有效性验证
+收集结果并保存 JSON
   ↓
-知识 Agent
-  └─ 查询 RAG 知识库（ChromaDB）
+发布完成事件
   ↓
-研判 Agent
-  └─ 置信度评估（LLM）
+结果输出 (JSON + 终端 + WebSocket)
+```
+
+### 事件流
+
+```
+ScanAgent 发布事件
   ↓
-结果输出 (JSON + 终端)
+EventBus 分发
+  ├─ CLI 订阅者：更新进度条
+  ├─ WebSocket 订阅者：推送到前端
+  └─ 其他订阅者：日志、统计等
+  ↓
+前端实时更新
+  ├─ ScanProgress：进度条
+  ├─ EventLog：事件日志
+  └─ ScanResults：结果展示
 ```
 
 ---
 
-## 🎨 用户界面
+## 数据存储
+
+### 当前架构（MVP 阶段）
+
+**SimpleStorageManager**: 内存存储方案
+
+```python
+# 扫描统计
+ScanStatistics:
+  - total_layers: int
+  - processed_layers: int
+  - total_files: int
+  - scanned_files: int
+  - filtered_files: int
+  - high_confidence: int
+  - medium_confidence: int
+  - low_confidence: int
+
+# 凭证记录
+CredentialRecord:
+  - credential_id: str
+  - task_id: str
+  - cred_type: CredentialType
+  - confidence: float
+  - file_path: str
+  - line_number: Optional[int]
+  - layer_id: Optional[str]
+  - context: Optional[str]
+  - raw_value: Optional[str]
+  - validation_status: ValidationStatus
+  - verified_at: Optional[datetime]
+  - metadata: Dict[str, Any]
+```
+
+### 输出格式
+
+```
+output/
+└── {task_id}/
+    └── result.json          # 扫描结果（完整 JSON）
+        ├── task_info        # 任务信息
+        ├── statistics       # 扫描统计
+        ├── credentials      # 凭证列表
+        └── metadata         # 元数据
+```
+
+### 扩展计划（待实现）
+
+**阶段 2: SQLite 持久化**
+- `scan_tasks` - 扫描任务
+- `credentials` - 凭证记录
+- `scan_layers` - 镜像层
+- `scan_metadata` - 扫描元数据
+
+**阶段 3: ChromaDB 向量检索（RAG）**
+- `historical_cases` - 历史案例库
+- `credential_patterns` - 凭证模式库
+- `knowledge_entries` - RAG 知识库
+
+---
+
+## MVP 范围（最小可行产品）
+
+### 核心功能（已实现）
+
+1. ✅ 镜像解压
+2. ✅ 智能文件筛选
+3. ✅ 内容扫描
+4. ✅ TruffleHog 凭证验证
+5. ✅ 结果输出
+6. ✅ CLI 命令
+7. ✅ Web UI（基础功能）
+8. ✅ WebSocket 实时通信
+9. ✅ 并发扫描
+
+### 验收标准
+
+- **功能可用**: 能够扫描本地 Docker 镜像并输出 JSON ✅
+- **性能基准**: 扫描速度 < 5 分钟/GB ✅
+- **智能体能力**: LLM 自主规划和工具调用 ✅
+
+### 迭代路线（渐进增强）
+
+```
+✅ MVP v1.0 (CLI + 基本扫描)
+  ↓
+✅ MVP v2.0 (单一智能体 + 工具标准化)
+  ↓
+✅ 阶段 2: TruffleHog 凭证验证
+  ↓
+🔄 阶段 3: SQLite 持久化存储
+  ↓
+⏳ 阶段 4: ChromaDB 向量检索（RAG）
+  ↓
+⏳ 阶段 5: 高级功能（模式学习、智能过滤）
+```
+
+---
+
+## 用户界面
 
 ### CLI（子命令结构）
 
-- `imagescan agent scan <image>` - 扫描镜像
+- `imagescan scan <image>` - 扫描镜像（支持并发）
 - `imagescan history` - 查看历史记录
 - `imagescan config` - 查看/修改配置
-- `imagescan verify <credential>` - 验证凭证
+- `imagescan verify <task_id>` - 验证凭证
+
+**特性**:
+- Rich 进度条（实时更新）
+- 彩色输出（凭证分级显示）
+- 并发扫描支持
+- 详细调试模式
 
 ### Web UI（轻量级控制台）
 
 **功能范围**:
-- 查看扫描结果
-- 简单的扫描触发按钮
-- 实时进度显示（轮询）
+- 扫描输入（支持多镜像）
+- 实时进度显示（WebSocket）
+- 扫描结果展示
+- 扫描历史记录
+- 事件日志
 
 **凭证详情**:
 - 类型分类
 - 脱敏展示
 - 位置信息
 - 置信度分数
+- 验证状态
 
 ---
 
-## 🗄️ 数据存储
-
-### 文件系统
-
-```
-output/
-└── {timestamp}/
-    └── {image_name}/
-        ├── results.json        # 扫描结果
-        ├── metadata.json       # 元数据
-        └── files/              # 提取的敏感文件
-```
-
-### SQLite 数据库
-
-**表结构**:
-- `scan_tasks` - 扫描任务
-- `credentials` - 凭证记录
-- `scan_layers` - 镜像层
-- `scan_metadata` - 扫描元数据
-- `knowledge_entries` - RAG 知识库
-
-### ChromaDB（向量数据库）
-
-**Collections**:
-- `historical_cases` - 历史案例库
-- `credential_patterns` - 凭证模式库
-
----
-
-## ✅ MVP 范围（最小可行产品）
-
-### 核心功能
-
-1. ✅ 镜像解压
-2. ✅ 智能文件筛选
-3. ✅ 内容扫描
-4. ✅ 结果输出
-
-### 验收标准
-
-- **功能可用**: 能够扫描本地 Docker 镜像并输出 JSON
-- **性能基准**: 扫描速度 < 5 分钟/GB
-
-### 迭代路线（渐进增强）
-
-```
-MVP (CLI + 基本扫描)
-  ↓
-Web UI (轻量级控制台)
-  ↓
-Agent 优化（多 Agent 协作）
-  ↓
-RAG 知识库（历史案例 + 凭证模式）
-```
-
----
-
-## 🚫 非目标（明确不做什么）
+## 非目标（明确不做什么）
 
 - ❌ 自动修复
 - ❌ 漏洞扫描（CVE）
@@ -489,7 +568,7 @@ RAG 知识库（历史案例 + 凭证模式）
 
 ---
 
-## 🧪 测试
+## 测试
 
 ### 运行测试
 
@@ -514,7 +593,7 @@ pytest --cov=imagescan --cov-report=html
 
 ---
 
-## 📝 开发规范
+## 开发规范
 
 ### 代码风格
 
@@ -535,12 +614,12 @@ refactor: 重构代码
 ### 分支策略
 
 - `main` - 主分支（稳定）
-- `develop` - 开发分支
+- `dev` - 开发分支
 - `feature/*` - 功能分支
 
 ---
 
-## 🎓 学习资源
+## 学习资源
 
 ### 内部文档
 
@@ -559,22 +638,24 @@ refactor: 重构代码
 
 ---
 
-## ⚠️ 重要提示
+## 重要提示
 
-1. **不要跳过文档**：在编写代码前，务必先阅读相关规范文档
-2. **版本锁定**：所有依赖版本已在 TECH_STACK.md 中锁定，不得随意更改
-3. **配置驱动**：使用 config.toml 管理配置，避免硬编码
-4. **日志规范**：使用结构化 JSON 日志，便于调试和监控
-5. **错误处理**：遵循分级处理策略，确保系统稳定性
-6. **测试优先**：为新功能添加测试，保持覆盖率 > 70%
+1. **版本锁定**: 所有依赖版本已在 TECH_STACK.md 中锁定，不得随意更改
+2. **配置驱动**: 使用 config.toml 管理配置，避免硬编码
+3. **日志规范**: 使用结构化 JSON 日志，便于调试和监控
+4. **错误处理**: 遵循分级处理策略，确保系统稳定性
+5. **工具标准化**: 新工具必须返回 `{success, data, summary}` 格式
+6. **上下文隔离**: 大量 LLM 调用应在工具层完成，避免污染主对话
+7. **TruffleHog 验证**: 验证工具通过 Docker 运行，需要 Docker 环境；验证会向云厂商发包，注意网络连接和速率限制
 
 ---
 
-## 📞 获取帮助
+## 获取帮助
 
-- 查看 [progress.txt](progress.txt) 了解当前进度
+- 查看当前文件了解架构设计
 - 阅读 [APP_FLOW.md](docs/APP_FLOW.md) 理解流程细节
-- 参考 [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) 按步骤构建
+- 参考 [IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) 了解实施步骤
+- 检查代码注释了解具体实现
 
 ---
 

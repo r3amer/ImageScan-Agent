@@ -8,6 +8,7 @@
 from . import docker_tools
 from . import tar_tools
 from . import file_tools
+from . import verification_tools
 
 # 导出注册表实例
 from .registry import registry
